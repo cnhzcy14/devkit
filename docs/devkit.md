@@ -17,13 +17,14 @@
 
 ```text
 ~/.devkit/
-├── musl/bin/       musl 静态 Rust 工具（宿主机/任何容器都可用）
-├── bin/            uv + python3 软链（仅容器内加 PATH）
+├── musl/bin/       musl 静态 Rust 工具 + tree-sitter CLI/wrapper
+├── bin/            uv/uvx（musl 静态）与 python3 软链
 ├── nvim/           源码编译的 Neovim（glibc 2.31 基线）
 ├── node/           Node.js 22 LTS
 ├── npm-global/     hunk / Trellis 等 npm 全局包
 ├── rustup/ cargo/  musl 构建工具链
-├── uv-python/      uv 托管的 Python 3.12
+├── ts-cli/         tree-sitter CLI 构建产物
+├── uv-python/      uv 托管的 Python 3.12（glibc）
 ├── openssl-musl/   ducker 需要的静态 OpenSSL
 ├── src/ backups/ state/
 ```
@@ -35,7 +36,7 @@
 ## 方式一：一键启动并安装
 
 ```bash
-cd ~/dev_dockerfiles        # 本仓库所在目录
+cd ~/work/project/devkit        # 本仓库所在目录
 ./devkit-up.sh --setup
 ```
 
@@ -82,7 +83,7 @@ cd ~/dev_dockerfiles        # 本仓库所在目录
 
   ```bash
   docker exec -it <容器> /bin/bash
-  HOME=/root DEVKIT_ROOT=/root/.devkit bash /home/$USER/dev_dockerfiles/devkit-cleanup.sh
+  HOME=/root DEVKIT_ROOT=/root/.devkit bash /home/$USER/work/project/devkit/devkit-cleanup.sh
   ```
 
   然后退出，按普通用户重跑完整安装。
@@ -94,11 +95,11 @@ cd ~/dev_dockerfiles        # 本仓库所在目录
 ```bash
 # 终端 A：root，装系统依赖
 docker exec -it <容器名或ID> /bin/bash
-APT_ONLY=1 bash /home/$USER/dev_dockerfiles/setup-ubuntu.sh
+APT_ONLY=1 bash /home/$USER/work/project/devkit/setup-ubuntu.sh
 
 # 终端 B：普通用户，装 home 内的工具
 docker exec -it <容器名或ID> /bin/bash -c "su - $USER"
-SKIP_APT=1 bash /home/$USER/dev_dockerfiles/setup-ubuntu.sh
+SKIP_APT=1 bash /home/$USER/work/project/devkit/setup-ubuntu.sh
 ```
 
 > `ubuntu:20.04` 默认没有 sudo。因此设计成 root 装系统依赖、普通用户装 home
@@ -108,7 +109,7 @@ SKIP_APT=1 bash /home/$USER/dev_dockerfiles/setup-ubuntu.sh
 
 ```bash
 docker exec -it <容器> /bin/bash -c \
-  "su - $USER -c 'RUST_ONLY=1 SKIP_APT=1 bash /home/$USER/dev_dockerfiles/setup-ubuntu.sh'"
+  "su - $USER -c 'RUST_ONLY=1 SKIP_APT=1 bash /home/$USER/work/project/devkit/setup-ubuntu.sh'"
 ```
 
 ## 安装内容
@@ -147,7 +148,7 @@ Rust 现代 musl 默认产出 **static-PIE**：`file` 可能显示 `dynamically 
 
 ```bash
 # 在容器内以普通用户执行
-bash /home/$USER/dev_dockerfiles/devkit-cleanup.sh
+bash /home/$USER/work/project/devkit/devkit-cleanup.sh
 ```
 
 删除内容：
@@ -162,7 +163,7 @@ bash /home/$USER/dev_dockerfiles/devkit-cleanup.sh
 先预览：
 
 ```bash
-DRY_RUN=1 bash /home/$USER/dev_dockerfiles/devkit-cleanup.sh
+DRY_RUN=1 bash /home/$USER/work/project/devkit/devkit-cleanup.sh
 ```
 
 > apt 源替换发生在容器内的 `/etc/apt/sources.list`（并留 `.devkit.bak`），属于
@@ -174,6 +175,7 @@ DRY_RUN=1 bash /home/$USER/dev_dockerfiles/devkit-cleanup.sh
 |---|---|---|
 | `RUST_ONLY` | `0` | `1` 只装 Rust 工具和 yazi，跳过 nvim/node/npm/LazyVim |
 | `NPM_ONLY` | `0` | `1` 只补 Node/uv/Python/hunk/Trellis（Rust 工具已存在则跳过），跳过 nvim/LazyVim |
+| `NVIM_ONLY` | `0` | `1` 只做 nvim 源码编译 + `.bashrc` + LazyVim/Lazy sync，跳过 Rust/Node/uv/npm |
 | `MIRROR` | `cn` | `official` 切回官方默认源 |
 | `SKIP_APT` | `0` | 普通用户重跑时设为 `1` |
 | `APT_ONLY` | `0` | root 只装系统依赖 |
@@ -184,6 +186,9 @@ DRY_RUN=1 bash /home/$USER/dev_dockerfiles/devkit-cleanup.sh
 | `CARGO_REGISTRY` | `sparse+https://rsproxy.cn/index/` | cargo 源；`official` 用 crates.io |
 | `PY_MIRROR` | NJU 镜像 | uv 下载 python-build-standalone 的镜像根 |
 | `FORCE_NVIM` | `0` | 强制重编 nvim |
+| `FORCE_TS_CLI` | `0` | 强制重编 tree-sitter CLI（musl 静态） |
+| `UPDATE_TS_PARSERS` | `0` | `1` 安装/更新 LazyVim ensure_installed 的 parser |
+| `TS_CLI_VERSION` | `0.27.2` | tree-sitter CLI 版本，必须 >=0.26.1 |
 | `FORCE_RUST_TOOLS` | `0` | 强制重编所有 Rust 工具 |
 | `FORCE_LAZYVIM` | `0` | 备份旧配置并重建 LazyVim |
 | `WITH_OPENCODE` | `0` | 额外安装 opencode |
@@ -206,8 +211,10 @@ SKIP_APT=1 RUST_ONLY=1 bash setup-ubuntu.sh
 
 ## 耗时提示
 
-首次完整安装会编译 11 个 Rust 工具、musl 静态 OpenSSL 和 Neovim，视机器性能大约
-20–40 分钟；Rust 工具和 nvim 都有“已存在则跳过”逻辑，失败后重跑只补未完成项。
+首次完整安装会编译 11 个 Rust 工具、musl 静态 OpenSSL、Neovim 和 tree-sitter CLI，
+另会下载 uv/Python；视机器性能大约 25–45 分钟。`UPDATE_TS_PARSERS=1` 时还会编译
+Treesitter parser。Rust 工具、nvim 和 tree-sitter CLI 都有“已存在则跳过”逻辑，
+失败后重跑只补未完成项。
 
 ## 宿主机上 `yazi` 不能运行的排查
 

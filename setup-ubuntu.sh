@@ -23,6 +23,8 @@
 #                          rg/fd/btm/zoxide），跳过 nvim/node/uv/npm/LazyVim
 #   NPM_ONLY=1            只补 Node/uv/Python/hunk/Trellis（Rust 工具已存在则跳过），
 #                         跳过 nvim/LazyVim
+#   NVIM_ONLY=1           只做 Neovim 源码编译 + .bashrc 托管块 + LazyVim/Lazy sync，
+#                         跳过 Rust 工具、Node/uv/npm 阶段（它们应已装好）
 #   MIRROR=official        整套默认源切回官方（默认 cn）
 #   APT_MIRROR=...         deb 源：默认 cn(清华)；可填 ustc、off、主机名或完整 URL
 #   RUSTUP_DIST_SERVER=... rustup 工具链源（默认 https://rsproxy.cn）
@@ -32,6 +34,9 @@
 #                         填 official 用 crates.io，或公司 sparse/git 索引 URL
 #   SKIP_APT=1             跳过 apt（镜像已预装依赖）
 #   FORCE_NVIM=1           重新编译 nvim
+#   FORCE_TS_CLI=1         重编 tree-sitter CLI（musl 静态）
+#   UPDATE_TS_PARSERS=1    安装/更新 LazyVim ensure_installed 的 Treesitter parser
+#   TS_CLI_VERSION=...     tree-sitter CLI 版本（默认 0.27.2，必须 >=0.26.1）
 #   FORCE_RUST_TOOLS=1     重编所有 Rust 工具
 #   FORCE_LAZYVIM=1        备份旧配置并重建 LazyVim
 #   WITH_OPENCODE=1        额外安装 opencode
@@ -45,11 +50,15 @@ export DEBIAN_FRONTEND=noninteractive
 MIRROR="${MIRROR:-cn}"
 RUST_ONLY="${RUST_ONLY:-0}"
 NPM_ONLY="${NPM_ONLY:-0}"
+NVIM_ONLY="${NVIM_ONLY:-0}"
 SKIP_APT="${SKIP_APT:-0}"
 FORCE_NVIM="${FORCE_NVIM:-0}"
 FORCE_RUST_TOOLS="${FORCE_RUST_TOOLS:-0}"
 FORCE_LAZYVIM="${FORCE_LAZYVIM:-0}"
 WITH_OPENCODE="${WITH_OPENCODE:-0}"
+FORCE_TS_CLI="${FORCE_TS_CLI:-0}"
+UPDATE_TS_PARSERS="${UPDATE_TS_PARSERS:-0}"
+TS_CLI_VERSION="${TS_CLI_VERSION:-0.27.2}"
 HUNK_VERSION="${HUNK_VERSION:-0.24.0}"
 DEVKIT_ROOT="${DEVKIT_ROOT:-$HOME/.devkit}"
 APT_MIRROR="${APT_MIRROR:-}"
@@ -190,6 +199,17 @@ backup_path(){
 # ---------------------------- 1. 预检 + apt ---------------------------------
 preflight(){
   step "预检"
+  if [ "$NVIM_ONLY" = "1" ] && { [ "$RUST_ONLY" = "1" ] || [ "$NPM_ONLY" = "1" ]; }; then
+    die "NVIM_ONLY=1 不能与 RUST_ONLY/NPM_ONLY 同时使用"
+  fi
+  if [ "$NVIM_ONLY" = "1" ]; then
+    local missing=()
+    for c in git make cmake ninja cc; do
+      command -v "$c" >/dev/null 2>&1 || missing+=("$c")
+    done
+    [ "${#missing[@]}" -eq 0 ] \
+      || die "NVIM_ONLY 需要构建工具：${missing[*]}。请先以 root 运行 APT_ONLY=1 装依赖"
+  fi
   if [ "${APT_ONLY:-0}" != "1" ]; then
     mkdir -p "$DEVKIT_ROOT" "$STATE_DIR" "$BACKUP_DIR"
   fi
@@ -265,7 +285,7 @@ apt_phase(){
     build-essential cmake ninja-build gettext pkg-config perl \
     autoconf automake libtool libtool-bin \
     libncurses-dev libssl-dev zlib1g-dev libexpat1-dev linux-libc-dev \
-    musl-tools musl-dev python3 python3-pip binutils
+    musl-tools musl-dev python3 python3-pip binutils libclang-dev
   [ -x /usr/bin/musl-gcc ] || die "musl-gcc 未安装成功"
   log "apt 依赖就绪"
 }
@@ -477,6 +497,59 @@ install_yazi(){
   log "yazi/ya 源码编译完成"
 }
 
+# ---------------------------- 3c. tree-sitter CLI（musl 静态） -------------
+ts_cli_phase(){
+  step "tree-sitter CLI（musl 静态）"
+  mkdir -p "$MUSL_BIN"
+  local real="$MUSL_BIN/tree-sitter.real" wrap="$MUSL_BIN/tree-sitter"
+  local installed=""
+  if [ -x "$real" ] && [ "$FORCE_TS_CLI" != "1" ]; then
+    installed=$("$real" --version 2>/dev/null | head -1 || true)
+  fi
+  if [ -n "$installed" ] && [ "$installed" = "tree-sitter $TS_CLI_VERSION" ]; then
+    log "$installed 已存在，跳过（FORCE_TS_CLI=1 重编）"
+  else
+    local llvm_lib musl_inc gcc_inc
+    llvm_lib=$(compgen -G '/usr/lib/llvm-*/lib/libclang.so*' 2>/dev/null | head -1 || true)
+    [ -n "$llvm_lib" ] || die "缺少 libclang；请先以 root 执行 APT_ONLY=1（包含 libclang-dev）"
+    llvm_lib=$(dirname "$llvm_lib")
+    musl_inc=/usr/include/x86_64-linux-musl
+    gcc_inc=$(cc -print-file-name=include)
+    log "编译 tree-sitter-cli $TS_CLI_VERSION → $real（约 1 分钟）"
+    LIBCLANG_PATH="$llvm_lib" \
+    BINDGEN_EXTRA_CLANG_ARGS_x86_64_unknown_linux_musl="-isystem $musl_inc -isystem $gcc_inc" \
+    RUSTFLAGS="-C target-feature=+crt-static -C link-arg=-L/usr/lib/x86_64-linux-musl" \
+    CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER=cc \
+      "$CARGO_HOME/bin/cargo" install tree-sitter-cli --version "$TS_CLI_VERSION" \
+        --locked --force --root "$DEVKIT_ROOT/ts-cli" --target "$MUSL_TARGET"
+    install -m 0755 "$DEVKIT_ROOT/ts-cli/bin/tree-sitter" "$real"
+  fi
+
+  cat > "$wrap" <<'EOF'
+#!/usr/bin/env bash
+# static-musl tree-sitter cannot dlopen the parser it just built.
+set -u
+real="$(dirname "$0")/tree-sitter.real"
+if [ "${1:-}" = "build" ]; then
+  out="parser.so"; prev=""
+  for a in "$@"; do
+    if [ "$prev" = "-o" ] || [ "$prev" = "--output" ]; then out="$a"; fi
+    prev="$a"
+  done
+  "$real" "$@"; rc=$?
+  if [ "$rc" -ne 0 ] && [ -s "$out" ] && readelf -h "$out" >/dev/null 2>&1; then
+    exit 0
+  fi
+  exit "$rc"
+fi
+exec "$real" "$@"
+EOF
+  chmod 0755 "$wrap"
+  is_static "$real" || die "tree-sitter CLI 不是静态链接：$(file "$real")"
+  "$wrap" --version
+  log "tree-sitter CLI 静态校验通过"
+}
+
 # ---------------------------- 4. Neovim（最新 tag，源码编译） ---------------
 latest_nvim_tag(){
   local refs tag m
@@ -589,6 +662,26 @@ node_phase(){
 }
 
 # ---------------------------- 6. uv + Python 3.12 ---------------------------
+uv_install_musl(){
+  local tag asset url tmpd uv_bin uvx_bin
+  tag=$(curl -fsSL --max-time 20 https://api.github.com/repos/astral-sh/uv/releases/latest 2>/dev/null \
+        | sed -n 's/.*"tag_name": "\([^"]*\)".*/\1/p' | head -1 || true)
+  [ -n "$tag" ] || tag="0.13.7"
+  asset="uv-x86_64-unknown-linux-musl.tar.gz"
+  url="https://github.com/astral-sh/uv/releases/download/$tag/$asset"
+  tmpd=$(mktemp -d) || return 1
+  if ! gh_url "$url" "$tmpd/$asset"; then rm -rf "$tmpd"; return 1; fi
+  tar -xzf "$tmpd/$asset" -C "$tmpd" || { rm -rf "$tmpd"; return 1; }
+  uv_bin=$(find "$tmpd" -type f -name uv | head -1)
+  uvx_bin=$(find "$tmpd" -type f -name uvx | head -1)
+  [ -n "$uv_bin" ] || { rm -rf "$tmpd"; return 1; }
+  rm -f "$DEVKIT_ROOT/bin/uv" "$DEVKIT_ROOT/bin/uvx"
+  install -m 0755 "$uv_bin" "$DEVKIT_ROOT/bin/uv"
+  [ -n "$uvx_bin" ] && install -m 0755 "$uvx_bin" "$DEVKIT_ROOT/bin/uvx"
+  rm -rf "$tmpd"
+  log "uv musl 静态包安装完成：$(basename "$url")"
+}
+
 uv_phase(){
   step "uv + Python 3.12（Trellis 需要 >=3.9）"
   mkdir -p "$DEVKIT_ROOT/bin" "$UV_PYTHON_INSTALL_DIR"
@@ -599,16 +692,20 @@ uv_phase(){
   else state_set_once UV_RECEIPT_CREATED 1; fi
   if [ -e "$HOME/.local/share/uv" ]; then state_set_once UV_SHARE_CREATED 0
   else state_set_once UV_SHARE_CREATED 1; fi
-  if [ ! -x "$DEVKIT_ROOT/bin/uv" ]; then
-    if curl -LsSf --retry 2 https://astral.sh/uv/install.sh \
+  if [ -x "$DEVKIT_ROOT/bin/uv" ] \
+     && "$DEVKIT_ROOT/bin/uv" --version 2>/dev/null | grep -q 'linux-musl'; then
+    log "uv 已是 musl 静态：$("$DEVKIT_ROOT/bin/uv" --version)"
+  elif uv_install_musl; then
+    :
+  elif curl -LsSf --retry 2 https://astral.sh/uv/install.sh \
        | env UV_INSTALL_DIR="$DEVKIT_ROOT/bin" UV_NO_MODIFY_PATH=1 sh; then
-      log "uv 安装完成"
-    else
-      warn "官方 uv 安装脚本失败，改用 pip 镜像安装"
-      python3 -m pip install --prefix "$DEVKIT_ROOT/uv-pip" --no-cache-dir \
-        -i https://pypi.tuna.tsinghua.edu.cn/simple uv
-      ln -sf "$DEVKIT_ROOT/uv-pip/bin/uv" "$DEVKIT_ROOT/bin/uv"
-    fi
+    warn "musl 静态包下载失败，已回退官方安装脚本（可能是 glibc 版）"
+  else
+    warn "musl 包和官方脚本均失败，改用 pip 镜像安装"
+    python3 -m pip install --prefix "$DEVKIT_ROOT/uv-pip" --no-cache-dir \
+      -i https://pypi.tuna.tsinghua.edu.cn/simple uv
+    rm -f "$DEVKIT_ROOT/bin/uv"
+    ln -sf "$DEVKIT_ROOT/uv-pip/bin/uv" "$DEVKIT_ROOT/bin/uv"
   fi
   [ -x "$DEVKIT_ROOT/bin/uv" ] || die "uv 安装失败"
   if [ -n "$PY_MIRROR" ]; then export UV_PYTHON_INSTALL_MIRROR="$PY_MIRROR"; fi
@@ -717,6 +814,38 @@ lazyvim_phase(){
     || warn "Lazy sync 未完成，网络好转后重跑本脚本"
 }
 
+# ---------------------------- 8b. Treesitter parser（glibc） --------------
+ts_parsers_phase(){
+  step "Treesitter parser（glibc）"
+  if [ "$UPDATE_TS_PARSERS" != "1" ]; then
+    log "UPDATE_TS_PARSERS=0，跳过"
+    return 0
+  fi
+  [ -x "$MUSL_BIN/tree-sitter.real" ] || die "tree-sitter CLI 缺失，无法更新 parser"
+  [ -x "$NVIM_PREFIX/bin/nvim" ] || die "nvim 缺失，无法更新 parser"
+  [ -d "$NVIM_CONFIG" ] || die "LazyVim 配置缺失，无法更新 parser"
+  # parser 必须用容器内的 glibc cc 编译，去掉 musl 相关 CFLAGS
+  unset CFLAGS CXXFLAGS CFLAGS_x86_64_unknown_linux_musl CXXFLAGS_x86_64_unknown_linux_musl CC_x86_64_unknown_linux_musl
+  export PATH="$MUSL_BIN:$NVIM_PREFIX/bin:$PATH"
+  local script=/tmp/devkit-ts-update.lua
+  cat > "$script" <<'LUA'
+local TS = require("nvim-treesitter")
+TS.update(nil, { summary = true }):await(function()
+  vim.cmd("qa")
+end)
+LUA
+  log "headless TSUpdate（在 20.04 容器内编译 glibc parser）"
+  if "$NVIM_PREFIX/bin/nvim" --headless -c "luafile $script"; then
+    log "Treesitter parser 更新完成"
+  else
+    warn "TSUpdate 未完成，可稍后重跑"
+  fi
+  rm -f "$script"
+  local count
+  count=$(find "$HOME/.local/share/nvim/site/parser" -maxdepth 1 -name '*.so' 2>/dev/null | wc -l)
+  log "parser 数量：$count（$HOME/.local/share/nvim/site/parser）"
+}
+
 # ---------------------------- 9. .bashrc 托管块 -----------------------------
 bashrc_phase(){
   step ".bashrc 托管块"
@@ -738,10 +867,11 @@ if [ -d "$HOME/.devkit" ]; then
   export UV_PYTHON_INSTALL_DIR="$HOME/.devkit/uv-python"
   export UV_CACHE_DIR="$HOME/.devkit/cache/uv"
 fi
-# Neovim 是 20.04 glibc 基线产物，仅在容器内加入 PATH；宿主机 22.04 也可手动运行。
-if [ -e /.dockerenv ] || grep -qE 'docker|containerd|kubepods' /proc/1/cgroup 2>/dev/null; then
-  [ -d "$HOME/.devkit/nvim/bin" ] && export PATH="$HOME/.devkit/nvim/bin:$PATH"
-fi
+# Neovim 是 Ubuntu 20.04（glibc 2.31）基线产物：宿主机 20.04+ 与共享同一
+# home 的 Ubuntu 20.04+ 容器都可直接使用；glibc 更老的容器不行。
+case ":$PATH:" in *":$HOME/.devkit/nvim/bin:"*) ;; *)
+  [ -d "$HOME/.devkit/nvim/bin" ] && export PATH="$HOME/.devkit/nvim/bin:$PATH" ;;
+esac
 # yazi: 退出时回到最后一次浏览目录
 yazi() {
   local tmp cwd
@@ -760,6 +890,32 @@ EOF
 verify_phase(){
   step "验收"
   export PATH="$MUSL_BIN:$DEVKIT_ROOT/bin:$NVIM_PREFIX/bin:$NODE_PREFIX/bin:$NPM_PREFIX/bin:$CARGO_HOME/bin:$PATH"
+  if [ "$NVIM_ONLY" = "1" ]; then
+    local p v bad=0 plugins=0
+    printf '\n%-10s %-8s %-52s %s\n' 项目 类型 路径 版本
+    p=$(command -v nvim 2>/dev/null || true)
+    if [ -n "$p" ]; then
+      v=$("$p" --version 2>/dev/null | head -1 || echo '?')
+      printf '\033[32m%-10s %-8s %-52s %s\033[0m\n' nvim glibc "$p" "$v"
+    else
+      printf '\033[31m%-10s %-8s %-52s %s\033[0m\n' nvim 缺失 - -
+      bad=1
+    fi
+    if [ -f "$NVIM_CONFIG/.devkit-managed" ]; then
+      printf '\033[32m%-10s %-8s %-52s %s\033[0m\n' LazyVim 配置 "$NVIM_CONFIG" managed
+    else
+      printf '\033[31m%-10s %-8s %-52s %s\033[0m\n' LazyVim 缺失 "$NVIM_CONFIG" -
+      bad=1
+    fi
+    if [ -d "$HOME/.local/share/nvim/lazy" ]; then
+      plugins=$(find "$HOME/.local/share/nvim/lazy" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | wc -l)
+    fi
+    printf 'LazyVim 插件目录：%d 个（%s）\n' "$plugins" "$HOME/.local/share/nvim/lazy"
+    [ "$plugins" -eq 0 ] && warn "LazyVim 插件尚未同步（网络恢复后重跑本脚本即可续传）"
+    printf '\n制品根目录：%s\n' "$DEVKIT_ROOT"
+    [ "$bad" -eq 0 ] || die "nvim/LazyVim 验收未通过（见上表）"
+    return 0
+  fi
   local bin p v static_ok=0 static_bad=0 other_bad=0
   printf '\n%-10s %-8s %-52s %s\n' 工具 类型 路径 版本
   for bin in keifu yazi ya gitui ducker eza bat rg fd btm zoxide; do
@@ -805,26 +961,40 @@ main(){
     log "APT_ONLY=1：系统依赖已就绪，退出。请用普通用户执行完整脚本（SKIP_APT=1）"
     exit 0
   fi
-  rust_phase
-  rust_tools_phase
-  step "yazi / ya"
-  install_yazi || die "yazi/ya 安装失败"
-  # 先写 .bashrc：即使后面的 nvim / LazyVim 因 GitHub 网络失败，
-  # musl 工具（含 yazi）在宿主机和新开的容器里也已经可用。
-  bashrc_phase
-  if [ "$RUST_ONLY" != "1" ]; then
-    [ "$NPM_ONLY" != "1" ] && nvim_phase
-    node_phase
-    uv_phase
-    npm_tools_phase
-    [ "$NPM_ONLY" != "1" ] && lazyvim_phase
+  if [ "$NVIM_ONLY" = "1" ]; then
+    # 只补 nvim/LazyVim：Rust/Node/uv/npm 应已安装并验证过
+    ts_cli_phase
+    nvim_phase
+    bashrc_phase
+    lazyvim_phase
+    ts_parsers_phase
+  else
+    rust_phase
+    rust_tools_phase
+    step "yazi / ya"
+    install_yazi || die "yazi/ya 安装失败"
+    # 先写 .bashrc：即使后面的 nvim / LazyVim 因 GitHub 网络失败，
+    # musl 工具（含 yazi）在宿主机和新开的容器里也已经可用。
+    bashrc_phase
+    if [ "$RUST_ONLY" != "1" ]; then
+      [ "$NPM_ONLY" != "1" ] && ts_cli_phase
+      [ "$NPM_ONLY" != "1" ] && nvim_phase
+      node_phase
+      uv_phase
+      npm_tools_phase
+      [ "$NPM_ONLY" != "1" ] && lazyvim_phase
+      [ "$NPM_ONLY" != "1" ] && ts_parsers_phase
+    fi
   fi
   state_set DEVKIT_ROOT "$DEVKIT_ROOT"
   state_set SETUP_AT "$(date -Is)"
   state_set RUST_ONLY "$RUST_ONLY"
   state_set NPM_ONLY "$NPM_ONLY"
+  state_set NVIM_ONLY "$NVIM_ONLY"
   verify_phase
-  if [ "$RUST_ONLY" = "1" ]; then
+  if [ "$NVIM_ONLY" = "1" ]; then
+    log "Neovim/LazyVim 安装完成（NVIM_ONLY=1）"
+  elif [ "$RUST_ONLY" = "1" ]; then
     log "Rust 工具安装完成（RUST_ONLY=1，已跳过 nvim/node/npm/LazyVim）"
   elif [ "$NPM_ONLY" = "1" ]; then
     log "npm 工具安装完成（NPM_ONLY=1，已跳过 nvim/LazyVim）"

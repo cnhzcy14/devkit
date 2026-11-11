@@ -7,6 +7,7 @@
 #   ./devkit-up.sh            启动容器并进入普通用户 shell
 #   ./devkit-up.sh --rust     以 root 装 apt 依赖，再以普通用户只装 Rust 工具
 #   ./devkit-up.sh --setup    以 root 装 apt 依赖，再以同名普通用户装全部工具
+#   ./devkit-up.sh --nvim     以 root 装 apt 依赖，再以普通用户只装 Neovim/LazyVim
 #   ./devkit-up.sh --apt      只以 root 装 apt 依赖，然后进入普通用户 shell
 #
 # 进入普通用户的方式与手工操作一致：
@@ -28,9 +29,9 @@ CLEANUP="$SCRIPT_DIR/devkit-cleanup.sh"
 MODE="${1:-shell}"
 
 case "$MODE" in
-  shell|--setup|--apt|--rust) ;;
-  -h|--help) sed -n '2,14p' "$0"; exit 0 ;;
-  *) echo "未知参数：$MODE（可用 --rust / --setup / --apt）" >&2; exit 2 ;;
+  shell|--setup|--apt|--rust|--nvim) ;;
+  -h|--help) sed -n '2,16p' "$0"; exit 0 ;;
+  *) echo "未知参数：$MODE（可用 --rust / --nvim / --setup / --apt）" >&2; exit 2 ;;
 esac
 
 [ -f "$SETUP" ] || { echo "找不到 $SETUP" >&2; exit 1; }
@@ -59,16 +60,18 @@ docker exec "$CONTAINER" /bin/bash -c "
 "
 
 # 3) root：只装系统依赖（curl / git / 编译工具 / musl 等）
-if [ "$MODE" = "--setup" ] || [ "$MODE" = "--apt" ] || [ "$MODE" = "--rust" ]; then
+if [ "$MODE" = "--setup" ] || [ "$MODE" = "--apt" ] || [ "$MODE" = "--rust" ] \
+   || [ "$MODE" = "--nvim" ]; then
   echo "[1/2] root 安装系统依赖 ..."
   docker exec "$CONTAINER" /bin/bash -c "APT_ONLY=1 bash '$SETUP'"
 fi
 
 # 4) 普通用户：装所有 home 内的开发工具
-if [ "$MODE" = "--setup" ] || [ "$MODE" = "--rust" ]; then
+if [ "$MODE" = "--setup" ] || [ "$MODE" = "--rust" ] || [ "$MODE" = "--nvim" ]; then
   echo "[2/2] 普通用户 $HOST_USER 安装开发工具 ..."
   EXTRA=""
   [ "$MODE" = "--rust" ] && EXTRA="RUST_ONLY=1"
+  [ "$MODE" = "--nvim" ] && EXTRA="NVIM_ONLY=1"
   docker exec "$CONTAINER" /bin/bash -c "su - '$HOST_USER' -c '$EXTRA SKIP_APT=1 bash $SETUP'"
 fi
 
