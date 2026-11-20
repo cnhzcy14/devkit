@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
 # ============================================================================
-# setup-ubuntu.sh — 共享 home 开发工具母机（Ubuntu 20.04 容器内运行）
+# setup-ubuntu.sh — 共享 home 开发工具母机（Ubuntu 20.04/22.04 容器内运行）
 # ----------------------------------------------------------------------------
 # 设计目标
-#   * 在官方 ubuntu:20.04 容器里，把通用工具装进共享 home，其他容器直接复用；
+#   * 在官方 ubuntu:20.04/22.04 容器里，把通用工具装进共享 home，其他容器直接复用；
 #   * Rust 工具全部编译为 x86_64-unknown-linux-musl 静态二进制，任何 glibc 容器可跑；
-#   * Neovim 在 20.04 上源码编译（glibc 2.31 基线，向上兼容 22.04/24.04）；
-#   * hunk / Trellis 走 Node + npm，Python 由 uv 托管 3.12（20.04 系统只有 3.8）；
+#   * Neovim 在构建容器内源码编译（20.04→glibc 2.31，22.04→glibc 2.35）；
+#   * hunk / Trellis 走 Node + npm，Python 由 uv 托管 3.12；
 #   * 所有制品集中在 ~/.devkit，便于 devkit-cleanup.sh 完整删除；
 #   * .bashrc 只写一段带标记的块，重复执行自动替换，不碰用户其他内容；
 #   * 默认全部使用国内镜像，可用 MIRROR=official 切回官方。
@@ -19,10 +19,10 @@
 #   或直接使用宿主机侧 devkit-up.sh --setup 一键完成。
 #
 # 常用开关：
-#   RUST_ONLY=1            只装 Rust 工具（keifu/yazi/gitui/ducker/eza/bat/
+#   RUST_ONLY=1            只装 Rust 工具（keifu/yazi/gitui/sk/ducker/eza/bat/
 #                          rg/fd/btm/zoxide），跳过 nvim/node/uv/npm/LazyVim
-#   NPM_ONLY=1            只补 Node/uv/Python/hunk/Trellis（Rust 工具已存在则跳过），
-#                         跳过 nvim/LazyVim
+#   NPM_ONLY=1            只补 Node/uv/Python/hunk/Trellis/opencode
+#                         （Rust 工具已存在则跳过），跳过 nvim/LazyVim
 #   NVIM_ONLY=1           只做 Neovim 源码编译 + .bashrc 托管块 + LazyVim/Lazy sync，
 #                         跳过 Rust 工具、Node/uv/npm 阶段（它们应已装好）
 #   MIRROR=official        整套默认源切回官方（默认 cn）
@@ -32,6 +32,10 @@
 #   RUSTUP_INIT_URL=...    rustup-init.sh 地址（默认随 RUSTUP_DIST_SERVER）
 #   CARGO_REGISTRY=...     cargo 源：默认 sparse+https://rsproxy.cn/index/；
 #                         填 official 用 crates.io，或公司 sparse/git 索引 URL
+#   NPM_REGISTRY=...       npm 源；默认 cn=npmmirror，official=npmjs
+#   NODE_DIST=...          Node tarball 根 URL；默认 cn=npmmirror，official=nodejs.org
+#   GH_MIRRORS=...         GitHub 镜像前缀（空格分隔）；none 表示只用直连
+#   OPENSSL_TARBALL=...    musl 静态 OpenSSL 源码 tarball 地址（ducker 用）
 #   SKIP_APT=1             跳过 apt（镜像已预装依赖）
 #   FORCE_NVIM=1           重新编译 nvim
 #   FORCE_TS_CLI=1         重编 tree-sitter CLI（musl 静态）
@@ -39,7 +43,8 @@
 #   TS_CLI_VERSION=...     tree-sitter CLI 版本（默认 0.27.2，必须 >=0.26.1）
 #   FORCE_RUST_TOOLS=1     重编所有 Rust 工具
 #   FORCE_LAZYVIM=1        备份旧配置并重建 LazyVim
-#   WITH_OPENCODE=1        额外安装 opencode
+#   WITH_OPENCODE=0        跳过 opencode（默认通过 npm 安装 @opencode/cli）
+#   OPENCODE_VERSION=...   opencode 版本（默认 latest）
 #   HUNK_VERSION=0.24.0    hunk 版本（0.24.1 的 linux 包尚未同步到 npmmirror）
 #   YAZI_VERSION=...       yazi 版本（默认从 rsproxy 解析最新）
 #   DEVKIT_ROOT=...        自定义制品根目录（默认 ~/.devkit）
@@ -55,11 +60,12 @@ SKIP_APT="${SKIP_APT:-0}"
 FORCE_NVIM="${FORCE_NVIM:-0}"
 FORCE_RUST_TOOLS="${FORCE_RUST_TOOLS:-0}"
 FORCE_LAZYVIM="${FORCE_LAZYVIM:-0}"
-WITH_OPENCODE="${WITH_OPENCODE:-0}"
+WITH_OPENCODE="${WITH_OPENCODE:-1}"
 FORCE_TS_CLI="${FORCE_TS_CLI:-0}"
 UPDATE_TS_PARSERS="${UPDATE_TS_PARSERS:-0}"
 TS_CLI_VERSION="${TS_CLI_VERSION:-0.27.2}"
 HUNK_VERSION="${HUNK_VERSION:-0.24.0}"
+OPENCODE_VERSION="${OPENCODE_VERSION:-latest}"
 DEVKIT_ROOT="${DEVKIT_ROOT:-$HOME/.devkit}"
 APT_MIRROR="${APT_MIRROR:-}"
 RUSTUP_DIST_SERVER="${RUSTUP_DIST_SERVER:-}"
@@ -95,23 +101,33 @@ MUSL_TARGET="x86_64-unknown-linux-musl"
 NVIM_CONFIG="$HOME/.config/nvim"
 
 if [ "$MIRROR" = "cn" ]; then
-  GH_MIRRORS=("https://ghfast.top/" "https://gh-proxy.com/")
+  if [ -z "${GH_MIRRORS:-}" ]; then
+    GH_MIRRORS=("https://ghfast.top/" "https://gh-proxy.com/")
+  elif [ "${GH_MIRRORS}" = "none" ]; then
+    GH_MIRRORS=("")
+  else
+    read -r -a GH_MIRRORS <<< "${GH_MIRRORS}"
+  fi
   : "${APT_MIRROR:=cn}"
   : "${RUSTUP_DIST_SERVER:=https://rsproxy.cn}"
   : "${CARGO_REGISTRY:=sparse+https://rsproxy.cn/index/}"
-  NPM_REGISTRY="https://registry.npmmirror.com"
-  NODE_DIST="https://npmmirror.com/mirrors/node"
+  NPM_REGISTRY="${NPM_REGISTRY:-https://registry.npmmirror.com}"
+  NODE_DIST="${NODE_DIST:-https://npmmirror.com/mirrors/node}"
   : "${PY_MIRROR:=https://mirrors.nju.edu.cn/github-release/astral-sh/python-build-standalone}"
-  OPENSSL_TARBALL="https://mirrors.tuna.tsinghua.edu.cn/ubuntu/pool/main/o/openssl/openssl_1.1.1f.orig.tar.gz"
+  : "${OPENSSL_TARBALL:=https://mirrors.tuna.tsinghua.edu.cn/ubuntu/pool/main/o/openssl/openssl_1.1.1f.orig.tar.gz}"
 else
-  GH_MIRRORS=("")
+  if [ -z "${GH_MIRRORS:-}" ] || [ "${GH_MIRRORS}" = "none" ]; then
+    GH_MIRRORS=("")
+  else
+    read -r -a GH_MIRRORS <<< "${GH_MIRRORS}"
+  fi
   : "${APT_MIRROR:=off}"
   : "${RUSTUP_DIST_SERVER:=https://static.rust-lang.org}"
   : "${CARGO_REGISTRY:=official}"
-  NPM_REGISTRY="https://registry.npmjs.org"
-  NODE_DIST="https://nodejs.org/dist"
-  PY_MIRROR=""
-  OPENSSL_TARBALL="https://www.openssl.org/source/openssl-1.1.1f.tar.gz"
+  NPM_REGISTRY="${NPM_REGISTRY:-https://registry.npmjs.org}"
+  NODE_DIST="${NODE_DIST:-https://nodejs.org/dist}"
+  PY_MIRROR="${PY_MIRROR:-}"
+  : "${OPENSSL_TARBALL:=https://www.openssl.org/source/openssl-1.1.1f.tar.gz}"
 fi
 
 [ "$RUSTUP_DIST_SERVER" = "official" ] && RUSTUP_DIST_SERVER="https://static.rust-lang.org"
@@ -210,17 +226,22 @@ preflight(){
     [ "${#missing[@]}" -eq 0 ] \
       || die "NVIM_ONLY 需要构建工具：${missing[*]}。请先以 root 运行 APT_ONLY=1 装依赖"
   fi
-  if [ "${APT_ONLY:-0}" != "1" ]; then
-    mkdir -p "$DEVKIT_ROOT" "$STATE_DIR" "$BACKUP_DIR"
-  fi
   [ -r /etc/os-release ] || die "无法识别系统"
   . /etc/os-release
   log "系统：${ID:-?} ${VERSION_ID:-?}  架构：$(uname -m)"
+  if [ ! -e /.dockerenv ] && [ ! -e /run/.containerenv ]; then
+    die "setup-ubuntu.sh 只允许在 Ubuntu 容器内运行，宿主机只负责启动容器。
+请用: ./devkit-up.sh --setup
+或先 docker run 一个 Ubuntu 容器，再进入容器执行本脚本。"
+  fi
+  [ "${ID:-}" = "ubuntu" ] || die "需要 Ubuntu 容器，当前是 ${ID:-?} ${VERSION_ID:-?}"
   [ "$(uname -m)" = "x86_64" ] || die "本脚本目前只支持 x86_64"
-  if [ "${ID:-}" = "ubuntu" ] && [ "${VERSION_ID:-}" != "20.04" ]; then
+  if [ "${VERSION_ID:-}" != "20.04" ]; then
     warn "推荐在 ubuntu:20.04 中运行；当前版本编译的 nvim 兼容基线会变高"
   fi
-  [ -f /.dockerenv ] || warn "看起来不在容器内（继续执行，但请确认 home 是共享的）"
+  if [ "${APT_ONLY:-0}" != "1" ]; then
+    mkdir -p "$DEVKIT_ROOT" "$STATE_DIR" "$BACKUP_DIR"
+  fi
   if [ "$(id -u)" = "0" ] && [ "${APT_ONLY:-0}" != "1" ]; then
     die "完整安装禁止以 root 运行；root 只用于 APT_ONLY=1。请用: su - <同名普通用户> -c 'SKIP_APT=1 bash ...'"
   fi
@@ -354,12 +375,15 @@ ensure_musl_openssl(){
 RUST_TOOLS=(
   "keifu|keifu|none"
   "gitui|gitui|none"
+  "skim|sk|none"
   "ducker|ducker|openssl"
   "eza|eza|none"
   "bat|bat|none"
   "ripgrep|rg|none"
   "fd-find|fd|none"
-  "bottom|btm|none|battery,zfs"
+  # bottom 默认 deploy 包含 nvidia；NVML 只支持 glibc，故关闭 nvidia，
+  # 但保留 gpu 以启用 Linux 上的 AMD/Intel GPU 监控。
+  "bottom|btm|none|battery,zfs,gpu"
   "zoxide|zoxide|none"
 )
 
@@ -599,6 +623,11 @@ preseed_nvim_deps(){
 
 nvim_phase(){
   step "Neovim 最新 tag 源码编译"
+  # 必须在第一次调用 nvim 之前记录目录是否已存在：nvim 自检会先创建它们，
+  # 否则 cleanup 会误判为“安装前已存在”而保留 devkit 生成的插件/parser。
+  track_nvim_dir "$HOME/.local/share/nvim" NVIM_DATA_CREATED
+  track_nvim_dir "$HOME/.local/state/nvim" NVIM_STATE_CREATED
+  track_nvim_dir "$HOME/.cache/nvim" NVIM_CACHE_CREATED
   mkdir -p "$NVIM_PREFIX" "$(dirname "$NVIM_SRC")"
   if [ -x "$NVIM_PREFIX/bin/nvim" ] && [ "$FORCE_NVIM" != "1" ] && ! grep -qa 'ld-musl' "$NVIM_PREFIX/bin/nvim"; then
     log "nvim 已存在：$("$NVIM_PREFIX/bin/nvim" --version | head -1)（FORCE_NVIM=1 重编）"
@@ -753,8 +782,19 @@ npm_tools_phase(){
     warn "trellis 不在 PATH"
   fi
 
-  if [ "$WITH_OPENCODE" = "1" ] && ! command -v opencode >/dev/null 2>&1; then
-    "$npm" install "${opts[@]}" opencode-ai || warn "opencode 安装失败"
+  if [ "$WITH_OPENCODE" = "1" ]; then
+    local oc="$NPM_PREFIX/bin/opencode"
+    if [ -x "$oc" ] && "$oc" --version >/dev/null 2>&1; then
+      log "opencode 已存在：$("$oc" --version 2>/dev/null | head -1 || echo '')"
+    else
+      log "安装 @opencode/cli@$OPENCODE_VERSION"
+      "$npm" install "${opts[@]}" "@opencode/cli@$OPENCODE_VERSION" || warn "opencode 安装失败"
+      if [ -x "$oc" ] && "$oc" --version >/dev/null 2>&1; then
+        log "opencode ✓ $("$oc" --version 2>/dev/null | head -1 || echo '')"
+      else
+        warn "opencode 不可用，检查 npm postinstall 是否被禁用、平台包是否可用"
+      fi
+    fi
   fi
   "$DEVKIT_ROOT/bin/python3" --version
 }
@@ -763,6 +803,15 @@ npm_tools_phase(){
 track_nvim_dir(){
   local dir="$1" key="$2"
   if [ -e "$dir" ]; then state_set_once "$key" 0; else state_set_once "$key" 1; fi
+}
+
+# tree-sitter CLI 本身是 musl 构建，其 cc crate 会按 musl target 默认选 musl-gcc。
+# nvim-treesitter 编译 parser 时继承本脚本的环境，所以必须先切到 glibc 编译器。
+use_glibc_cc_for_nvim(){
+  export CC=/usr/bin/cc CXX=/usr/bin/c++
+  export CC_x86_64_unknown_linux_musl=/usr/bin/cc
+  export CXX_x86_64_unknown_linux_musl=/usr/bin/c++
+  unset CFLAGS CXXFLAGS CFLAGS_x86_64_unknown_linux_musl CXXFLAGS_x86_64_unknown_linux_musl
 }
 
 lazyvim_phase(){
@@ -802,13 +851,11 @@ lazyvim_phase(){
     log "跳过 Lazy sync（配置不属于本工具）"
     return 0
   fi
-  track_nvim_dir "$HOME/.local/share/nvim" NVIM_DATA_CREATED
-  track_nvim_dir "$HOME/.local/state/nvim" NVIM_STATE_CREATED
-  track_nvim_dir "$HOME/.cache/nvim" NVIM_CACHE_CREATED
   if [ ! -x "$NVIM_PREFIX/bin/nvim" ]; then
     warn "nvim 缺失，跳过 Lazy sync"; return 0
   fi
   log "headless Lazy! sync（插件下载走 GitHub；失败可重跑续传）"
+  use_glibc_cc_for_nvim
   "$NVIM_PREFIX/bin/nvim" --headless "+Lazy! sync" +qa \
     && log "Lazy sync 完成" \
     || warn "Lazy sync 未完成，网络好转后重跑本脚本"
@@ -824,17 +871,36 @@ ts_parsers_phase(){
   [ -x "$MUSL_BIN/tree-sitter.real" ] || die "tree-sitter CLI 缺失，无法更新 parser"
   [ -x "$NVIM_PREFIX/bin/nvim" ] || die "nvim 缺失，无法更新 parser"
   [ -d "$NVIM_CONFIG" ] || die "LazyVim 配置缺失，无法更新 parser"
-  # parser 必须用容器内的 glibc cc 编译，去掉 musl 相关 CFLAGS
-  unset CFLAGS CXXFLAGS CFLAGS_x86_64_unknown_linux_musl CXXFLAGS_x86_64_unknown_linux_musl CC_x86_64_unknown_linux_musl
+  # tree-sitter CLI 本身是 musl 构建，必须把 target 专用编译器指向 glibc cc，
+  # 否则 parser 会链接到 musl 的 libc.so，Neovim（glibc）无法 dlopen。
+  use_glibc_cc_for_nvim
   export PATH="$MUSL_BIN:$NVIM_PREFIX/bin:$PATH"
   local script=/tmp/devkit-ts-update.lua
-  cat > "$script" <<'LUA'
+  local musl_langs="" so lang
+  for so in "$HOME/.local/share/nvim/site/parser"/*.so; do
+    [ -e "$so" ] || continue
+    if readelf -d "$so" 2>/dev/null | grep -q 'Shared library: \[libc\.so\]'; then
+      lang=$(basename "$so" .so)
+      musl_langs+="\"$lang\", "
+    fi
+  done
+  if [ -n "$musl_langs" ]; then
+    warn "发现 musl 版 parser，强制用 glibc 重编：$musl_langs"
+    cat > "$script" <<LUA
+local TS = require("nvim-treesitter")
+TS.install({ $musl_langs }, { force = true }):await(function()
+  vim.cmd("qa")
+end)
+LUA
+  else
+    cat > "$script" <<'LUA'
 local TS = require("nvim-treesitter")
 TS.update(nil, { summary = true }):await(function()
   vim.cmd("qa")
 end)
 LUA
-  log "headless TSUpdate（在 20.04 容器内编译 glibc parser）"
+  fi
+  log "headless TSUpdate（在构建容器内编译 glibc parser）"
   if "$NVIM_PREFIX/bin/nvim" --headless -c "luafile $script"; then
     log "Treesitter parser 更新完成"
   else
@@ -844,6 +910,34 @@ LUA
   local count
   count=$(find "$HOME/.local/share/nvim/site/parser" -maxdepth 1 -name '*.so' 2>/dev/null | wc -l)
   log "parser 数量：$count（$HOME/.local/share/nvim/site/parser）"
+  local bad=0 so
+  for so in "$HOME/.local/share/nvim/site/parser"/*.so; do
+    [ -e "$so" ] || continue
+    if readelf -d "$so" 2>/dev/null | grep -q 'Shared library: \[libc\.so\]'; then
+      warn "parser 链接到 musl libc：$(basename "$so")"
+      bad=1
+    fi
+  done
+  [ "$bad" -eq 0 ] || die "parser 的 libc 链接异常，Neovim 无法 dlopen；请检查 CC_x86_64_unknown_linux_musl"
+}
+
+# ---------------------------- 9b. 构建中间产物清理 -------------------------
+# 成功验收后删除只用于构建的目录；运行时产物都在 musl/bin、nvim、node 等。
+cleanup_build_artifacts_phase(){
+  step "清理构建中间产物"
+  local p removed=0
+  for p in "$NVIM_SRC/.deps" "$NVIM_SRC/build" \
+           "$DEVKIT_ROOT/ts-cli" "$OPENSSL_MUSL" "$DEVKIT_ROOT/src/yazi"; do
+    [ -e "$p" ] || continue
+    log "删除 $p"
+    rm -rf "$p"
+    removed=$((removed + 1))
+  done
+  if [ "$removed" -eq 0 ]; then
+    log "没有需要清理的中间产物"
+  else
+    log "已清理 $removed 个构建目录"
+  fi
 }
 
 # ---------------------------- 9. .bashrc 托管块 -----------------------------
@@ -867,8 +961,8 @@ if [ -d "$HOME/.devkit" ]; then
   export UV_PYTHON_INSTALL_DIR="$HOME/.devkit/uv-python"
   export UV_CACHE_DIR="$HOME/.devkit/cache/uv"
 fi
-# Neovim 是 Ubuntu 20.04（glibc 2.31）基线产物：宿主机 20.04+ 与共享同一
-# home 的 Ubuntu 20.04+ 容器都可直接使用；glibc 更老的容器不行。
+# Neovim 使用构建容器的 glibc 基线（20.04→2.31，22.04→2.35）：宿主与共享
+# 同一 home、glibc 不低于该基线的容器都可直接使用；更老的容器不行。
 case ":$PATH:" in *":$HOME/.devkit/nvim/bin:"*) ;; *)
   [ -d "$HOME/.devkit/nvim/bin" ] && export PATH="$HOME/.devkit/nvim/bin:$PATH" ;;
 esac
@@ -918,7 +1012,7 @@ verify_phase(){
   fi
   local bin p v static_ok=0 static_bad=0 other_bad=0
   printf '\n%-10s %-8s %-52s %s\n' 工具 类型 路径 版本
-  for bin in keifu yazi ya gitui ducker eza bat rg fd btm zoxide; do
+  for bin in keifu yazi ya gitui sk ducker eza bat rg fd btm zoxide; do
     p=$(command -v "$bin" 2>/dev/null || true)
     if [ -n "$p" ]; then
       v=$("$p" --version 2>/dev/null | head -1 || echo '?')
@@ -934,6 +1028,7 @@ verify_phase(){
   done
   if [ "$RUST_ONLY" != "1" ]; then
     local other_bins="node npm hunk trellis uv python3"
+    [ "$WITH_OPENCODE" = "1" ] && other_bins="$NPM_PREFIX/bin/opencode $other_bins"
     [ "$NPM_ONLY" != "1" ] && other_bins="nvim $other_bins"
     for bin in $other_bins; do
       p=$(command -v "$bin" 2>/dev/null || true)
@@ -992,6 +1087,7 @@ main(){
   state_set NPM_ONLY "$NPM_ONLY"
   state_set NVIM_ONLY "$NVIM_ONLY"
   verify_phase
+  cleanup_build_artifacts_phase
   if [ "$NVIM_ONLY" = "1" ]; then
     log "Neovim/LazyVim 安装完成（NVIM_ONLY=1）"
   elif [ "$RUST_ONLY" = "1" ]; then

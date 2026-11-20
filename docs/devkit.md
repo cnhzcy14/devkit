@@ -1,13 +1,14 @@
-# 共享 home 开发工具母机（Ubuntu 20.04）
+# 共享 home 开发工具母机（Ubuntu 20.04 / 22.04）
 
-用官方 `ubuntu:20.04` 容器作为“母机”，把通用开发工具装进共享 home，之后任何
-挂载同一 home 的开发容器都能直接使用。
+用官方 `ubuntu:20.04` 或 `ubuntu:22.04` 容器作为“母机”，把通用开发工具装进共享
+home，之后任何挂载同一 home 的开发容器都能直接使用。`setup-ubuntu.sh` 必须在
+Ubuntu 容器内运行；宿主机只负责启动容器，不直接运行安装脚本。
 
 ## 文件
 
 | 文件 | 作用 |
 |---|---|
-| `setup-ubuntu.sh` | 在 ubuntu 20.04 容器内安装全部工具，幂等可重跑 |
+| `setup-ubuntu.sh` | 在 Ubuntu 20.04/22.04 容器内安装全部工具，幂等可重跑 |
 | `devkit-cleanup.sh` | 完整删除安装制品，清理并还原 `.bashrc` 托管块 |
 | `devkit-up.sh` | 宿主机侧启动母机容器（沿用你的 docker run 参数） |
 
@@ -19,7 +20,7 @@
 ~/.devkit/
 ├── musl/bin/       musl 静态 Rust 工具 + tree-sitter CLI/wrapper
 ├── bin/            uv/uvx（musl 静态）与 python3 软链
-├── nvim/           源码编译的 Neovim（glibc 2.31 基线）
+├── nvim/           源码编译的 Neovim（glibc 基线取决于构建容器）
 ├── node/           Node.js 22 LTS
 ├── npm-global/     hunk / Trellis 等 npm 全局包
 ├── rustup/ cargo/  musl 构建工具链
@@ -42,14 +43,35 @@ cd ~/work/project/devkit        # 本仓库所在目录
 
 它会：
 
-1. 用 `ubuntu:20.04` 后台启动容器，`--net=host`、home 映射、hostname、UID/GID、
-   用户名都与你现有启动命令一致；
-2. 通过 `docker exec <容器> /bin/bash`（root）创建同名用户，并只执行
-   `APT_ONLY=1 setup-ubuntu.sh` 装系统依赖（curl/git/编译工具/musl 等）；
-3. 通过 `docker exec <容器> /bin/bash -c "su - $USER -c '...'"` 以普通用户执行
+1. 用 `ubuntu:20.04` 或 `ubuntu:22.04`（可用 `IMAGE=` 换成本地/内网镜像）后台启动容器，
+   `--net=host`、home 映射、hostname、UID/GID、用户名都与你现有启动命令一致；
+2. 通过 `docker exec -u 0 <容器> /bin/bash`（root）创建同名用户（镜像已有则校验
+   UID/GID 后跳过），并只执行 `APT_ONLY=1 setup-ubuntu.sh` 装系统依赖；
+3. 通过 `docker exec -u 0 <容器> /bin/bash -c "su - $USER -c '...'"` 以普通用户执行
    完整安装，所有 Rust 工具、nvim、node/npm、hunk、Trellis、uv/Python 都落到
    共享 home；
-4. 最后用 `docker exec -it <容器> su - $USER` 进入普通用户 shell。
+4. 最后用 `docker exec -it -u 0 <容器> su - $USER` 进入普通用户 shell。
+
+### 使用内网/自制的基础镜像
+
+```bash
+IMAGE=myreg.example.com/ubuntu20.04:dev ./devkit-up.sh --setup
+```
+
+要求：
+
+- 仍是 glibc 的 Ubuntu 20.04（或更新版本）；Alpine/musl 镜像不行；
+- x86_64；
+- 有 `/bin/bash`、`/bin/sleep`、apt 和基本 coreutils；
+- 镜像内已有同名用户时，UID/GID 必须与宿主机一致，否则脚本会报错退出；
+- 如果 apt 源已经是公司内网源，设置 `APT_MIRROR=off`，避免脚本改源或回退公网 USTC；
+  镜像已预装全部系统依赖时加 `SKIP_APT=1`。
+
+> `devkit-up.sh` 会把下列变量写进容器 `/tmp/devkit-up.env`，root 和普通用户
+> 两个阶段都会 source：`MIRROR`、`APT_MIRROR`、`SKIP_APT`、
+> `RUSTUP_DIST_SERVER`、`RUSTUP_UPDATE_ROOT`、`RUSTUP_INIT_URL`、
+> `CARGO_REGISTRY`、`NPM_REGISTRY`、`NODE_DIST`、`GH_MIRRORS`、
+> `OPENSSL_TARBALL`、`PY_MIRROR`，以及版本类变量。
 
 > 这个边界是强制的：完整安装不允许以 root 运行；root 只负责
 > `APT_ONLY=1` 的系统依赖，避免 `~/.devkit` 里的文件属主变成 root。
@@ -103,7 +125,8 @@ SKIP_APT=1 bash /home/$USER/work/project/devkit/setup-ubuntu.sh
 ```
 
 > `ubuntu:20.04` 默认没有 sudo。因此设计成 root 装系统依赖、普通用户装 home
-> 制品，避免把 `~/.devkit` 里文件的属主写成 root。
+> 制品，避免把 `~/.devkit` 里文件的属主写成 root。安装脚本本身只允许在容器内
+> 运行；宿主机只负责 `docker run` / `devkit-up.sh`。
 
 当前阶段只装 Rust 工具时，普通用户侧加 `RUST_ONLY=1`：
 
@@ -120,13 +143,14 @@ docker exec -it <容器> /bin/bash -c \
 |---|---|
 | `keifu` | `keifu` |
 | `yazi` / `ya` | 官方 musl 预编译包；失败则源码编译（crates.io 包缺 preset 资源） |
-| `gitui` | `gitui` |
+| `gitui` | `gitui`（替代 lazygit） |
+| `sk`（skim） | `skim`（替代 fzf） |
 | `ducker` | `ducker` |
 | `eza` | `eza` |
 | `bat` | `bat` |
 | `rg`（ripgrep） | `ripgrep` |
 | `fd`（fd-find） | `fd-find` |
-| `btm`（bottom） | `bottom`（关闭 NVIDIA 监控以保持 musl 静态链接） |
+| `btm`（bottom） | `bottom`（`battery,zfs,gpu`：支持 Linux 上的 AMD/Intel GPU；关闭 `nvidia`，因为 NVML 仅支持 glibc） |
 | `zoxide` | `zoxide` |
 
 编译参数：`--target x86_64-unknown-linux-musl` + `target-feature=+crt-static`。
@@ -142,13 +166,15 @@ Rust 现代 musl 默认产出 **static-PIE**：`file` 可能显示 `dynamically 
 - uv + Python 3.12：为 Trellis 提供 `>=3.9` 解释器；
 - hunk：npm 包 `hunkdiff`，默认固定 `0.24.0`（`0.24.1` 的 linux 平台包尚未同步到
   npmmirror；可用 `HUNK_VERSION=...` 覆盖）；
-- Trellis：npm 包 `@mindfoldhq/trellis@latest`。
+- Trellis：npm 包 `@mindfoldhq/trellis@latest`；
+- opencode：npm 包 `@opencode/cli`，默认安装，命令为 `opencode`（另有
+  `opencode2` 别名）；设 `WITH_OPENCODE=0` 可跳过。
 
 ## 清理
 
 ```bash
-# 在容器内以普通用户执行
-bash /home/$USER/work/project/devkit/devkit-cleanup.sh
+# 宿主机或容器内均可，以同一个普通用户执行
+bash ~/work/project/devkit/devkit-cleanup.sh
 ```
 
 删除内容：
@@ -174,7 +200,7 @@ DRY_RUN=1 bash /home/$USER/work/project/devkit/devkit-cleanup.sh
 | 环境变量 | 默认 | 说明 |
 |---|---|---|
 | `RUST_ONLY` | `0` | `1` 只装 Rust 工具和 yazi，跳过 nvim/node/npm/LazyVim |
-| `NPM_ONLY` | `0` | `1` 只补 Node/uv/Python/hunk/Trellis（Rust 工具已存在则跳过），跳过 nvim/LazyVim |
+| `NPM_ONLY` | `0` | `1` 只补 Node/uv/Python/hunk/Trellis/opencode（Rust 工具已存在则跳过），跳过 nvim/LazyVim |
 | `NVIM_ONLY` | `0` | `1` 只做 nvim 源码编译 + `.bashrc` + LazyVim/Lazy sync，跳过 Rust/Node/uv/npm |
 | `MIRROR` | `cn` | `official` 切回官方默认源 |
 | `SKIP_APT` | `0` | 普通用户重跑时设为 `1` |
@@ -184,6 +210,10 @@ DRY_RUN=1 bash /home/$USER/work/project/devkit/devkit-cleanup.sh
 | `RUSTUP_UPDATE_ROOT` | `$RUSTUP_DIST_SERVER/rustup` | rustup 自更新源 |
 | `RUSTUP_INIT_URL` | 随 `RUSTUP_DIST_SERVER` | rustup-init.sh 地址 |
 | `CARGO_REGISTRY` | `sparse+https://rsproxy.cn/index/` | cargo 源；`official` 用 crates.io |
+| `NPM_REGISTRY` | cn=npmmirror / official=npmjs | npm registry |
+| `NODE_DIST` | cn=npmmirror / official=nodejs.org | Node tarball 根 URL |
+| `GH_MIRRORS` | ghfast + gh-proxy | GitHub 镜像前缀（空格分隔）；`none` 只用直连 |
+| `OPENSSL_TARBALL` | 清华/官方 | musl 静态 OpenSSL 源码地址 |
 | `PY_MIRROR` | NJU 镜像 | uv 下载 python-build-standalone 的镜像根 |
 | `FORCE_NVIM` | `0` | 强制重编 nvim |
 | `FORCE_TS_CLI` | `0` | 强制重编 tree-sitter CLI（musl 静态） |
@@ -191,7 +221,8 @@ DRY_RUN=1 bash /home/$USER/work/project/devkit/devkit-cleanup.sh
 | `TS_CLI_VERSION` | `0.27.2` | tree-sitter CLI 版本，必须 >=0.26.1 |
 | `FORCE_RUST_TOOLS` | `0` | 强制重编所有 Rust 工具 |
 | `FORCE_LAZYVIM` | `0` | 备份旧配置并重建 LazyVim |
-| `WITH_OPENCODE` | `0` | 额外安装 opencode |
+| `WITH_OPENCODE` | `1` | 通过 npm 安装 opencode；设 `0` 跳过 |
+| `OPENCODE_VERSION` | `latest` | opencode 版本（npm 包 `@opencode/cli`） |
 | `HUNK_VERSION` | `0.24.0` | hunk 版本 |
 | `YAZI_VERSION` | 自动解析 | yazi 版本（默认取 rsproxy 最新） |
 | `DEVKIT_ROOT` | `~/.devkit` | 制品根目录 |
@@ -202,7 +233,11 @@ DRY_RUN=1 bash /home/$USER/work/project/devkit/devkit-cleanup.sh
 APT_MIRROR=mirrors.corp.example.com \
 RUSTUP_DIST_SERVER=https://mirrors.corp.example.com/rustup \
 RUSTUP_UPDATE_ROOT=https://mirrors.corp.example.com/rustup \
+RUSTUP_INIT_URL=https://mirrors.corp.example.com/rustup-init.sh \
 CARGO_REGISTRY=sparse+https://mirrors.corp.example.com/crates.io-index/ \
+NPM_REGISTRY=https://npm.corp.example.com \
+NODE_DIST=https://mirrors.corp.example.com/node \
+GH_MIRRORS="https://git.corp.example.com/github-proxy/" \
 SKIP_APT=1 RUST_ONLY=1 bash setup-ubuntu.sh
 ```
 
@@ -211,7 +246,7 @@ SKIP_APT=1 RUST_ONLY=1 bash setup-ubuntu.sh
 
 ## 耗时提示
 
-首次完整安装会编译 11 个 Rust 工具、musl 静态 OpenSSL、Neovim 和 tree-sitter CLI，
+首次完整安装会编译 12 个 Rust 工具、musl 静态 OpenSSL、Neovim 和 tree-sitter CLI，
 另会下载 uv/Python；视机器性能大约 25–45 分钟。`UPDATE_TS_PARSERS=1` 时还会编译
 Treesitter parser。Rust 工具、nvim 和 tree-sitter CLI 都有“已存在则跳过”逻辑，
 失败后重跑只补未完成项。

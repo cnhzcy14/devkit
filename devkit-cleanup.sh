@@ -9,13 +9,19 @@
 #   若 setup 备份过旧的 ~/.config/nvim，则自动还原
 #
 # 用法：
-#   bash devkit-cleanup.sh              # 默认清理 ~/.devkit
+#   bash devkit-cleanup.sh              # 默认清理 ~/.devkit（宿主机或容器内均可）
 #   DEVKIT_ROOT=/path bash devkit-cleanup.sh
 #   DRY_RUN=1 bash devkit-cleanup.sh    # 只打印将执行的操作
+#
+# 说明：所有被删除的路径都在共享 home 内，因此不要求必须在容器内运行；
+#       请使用安装时的同一个普通用户，不要用 root（否则会清错 HOME）。
 # ============================================================================
 set -Eeuo pipefail
 
 DEVKIT_ROOT="${DEVKIT_ROOT:-$HOME/.devkit}"
+# state 文件里也记录了 DEVKIT_ROOT；它只是信息，不能覆盖本次调用指定的根目录，
+# 否则 `DEVKIT_ROOT=/tmp/test` 会被 state 改回真实目录并删错地方。
+_REQUESTED_DEVKIT_ROOT="$DEVKIT_ROOT"
 DRY_RUN="${DRY_RUN:-0}"
 STATE_FILE="$DEVKIT_ROOT/state/setup.env"
 RC="$HOME/.bashrc"
@@ -37,6 +43,7 @@ UV_SHARE_CREATED=0
 if [ -f "$STATE_FILE" ]; then
   # shellcheck disable=SC1090
   . "$STATE_FILE"
+  DEVKIT_ROOT="$_REQUESTED_DEVKIT_ROOT"
   log "读取安装记录：$STATE_FILE"
 else
   warn "无安装记录，将按保守策略清理"

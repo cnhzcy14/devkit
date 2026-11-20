@@ -1,6 +1,13 @@
 # 交接说明：当前状态与下一步（Neovim / LazyVim）
 
-> 最后更新：2026-11-17（已核对仓库、容器和 `~/.devkit` 的实际状态）
+> 最后更新：2026-11-18（Rust 工具清单改为 gitui + skim）
+>
+> 2026-11-18 现状核对：当前这台公司服务器上没有 `~/.devkit`，旧容器
+> `ye_cheng_d3a5c06b` 也不在这台机器上；本机运行的是 `ye_cheng_9f9c7b7b`
+> （Ubuntu 22.04.3，宿主为 Ubuntu 24.04.2）。因此下文
+> “已完成的实际安装”是 2026-11-17 的历史记录，恢复工具链需要重跑 setup。
+> Rust 工具清单本次调整为：用 `gitui` 替代 `lazygit`，用 `skim`（命令 `sk`）
+> 替代 `fzf`，不再安装 lazygit/fzf。
 
 ## 仓库
 
@@ -46,6 +53,10 @@ zoxide 0.10.0
 宿主机和容器交互 shell 均已实测可用（`yazi --version`、`rg --version` 等）。
 静态判定使用 `readelf -l` 无 `INTERP`，是 static-PIE。
 
+2026-11-18 起脚本新增 `skim`；`cargo install skim` 产出的命令是 `sk`，
+已加入 `RUST_TOOLS` 和验收清单。重跑 `RUST_ONLY=1` 后会出现在
+`~/.devkit/musl/bin/sk`。`gitui` 与 `sk` 分别替代 lazygit、fzf。
+
 ### Node / npm 工具
 
 ```text
@@ -59,6 +70,11 @@ Python 3.12.16       <- uv 托管
 
 宿主机与容器交互 shell 均已实测 `hunk --help`、`trellis --help` 正常。
 `trellis init` 尚未在真实项目执行（会修改项目仓库）。
+
+2026-11-18 起脚本默认通过 npm 安装 opencode（包名 `@opencode/cli`，
+命令 `opencode`/`opencode2`，`WITH_OPENCODE=0` 可跳过）。本机现有
+`~/.opencode/bin/opencode` 是手动安装的，devkit 安装后会通过 PATH 优先使用
+`~/.devkit/npm-global/bin/opencode`。
 
 ### Neovim / LazyVim（已实测）
 
@@ -101,31 +117,33 @@ parser      35 个，~/.local/share/nvim/site/parser
 ### 尚未安装 / 可选
 
 - LazyVim `:checkhealth` 在容器 headless 环境下的其他缺省项（非阻塞）：
-  `lazygit`、`fzf`、`luarocks`、`ghostscript`、`ImageMagick`、
-  `trash`/`gio`、`kitty`/`wezterm` 等。`rg`/`fd` 实际已装，只有在不加载
+  `luarocks`、`ghostscript`、`ImageMagick`、`trash`/`gio`、
+  `kitty`/`wezterm` 等。`rg`/`fd` 实际已装，只有在不加载
   `.bashrc` 的非交互命令里才会显示缺失。
+- LazyVim 默认生态会检查 `lazygit`/`fzf`，本项目刻意不装它们，改用
+  `gitui` 和 `skim`（`sk`）；相关 checkhealth 提示可忽略。
 - 旧 XDG 数据（`~/.local/share/nvim/site`、`mason`）来自之前 `~/neovim` 安装；
   用户已改为共享 home 策略，保留现有数据和 parser。
 
 ## 当前运行容器
 
 ```text
-容器名：ye_cheng_d3a5c06b
-镜像：ubuntu:20.04
-状态：Up 9 days（截至 2026-11-17）
+容器名：ye_cheng_9f9c7b7b
+镜像：ye_cheng/cnngen:261004-dev（Ubuntu 22.04.3）
+状态：Up 3 days（截至 2026-11-18）
 ```
 
-内部已创建 `ye_cheng`（UID/GID 1001），root apt 依赖已装好（含
-`build-essential / cmake / ninja-build / gettext / musl-tools / libclang-dev` 等）。
+> 旧容器 `ye_cheng_d3a5c06b`（ubuntu:20.04）已不存在，其 `~/.devkit` 安装也
+> 随之消失。新容器 home 中没有 `~/.devkit`，需要重新执行 setup。
 
 进入方式：
 
 ```bash
 # root
-docker exec -it ye_cheng_d3a5c06b /bin/bash
+docker exec -it ye_cheng_9f9c7b7b /bin/bash
 
 # 普通用户
-docker exec -it ye_cheng_d3a5c06b /bin/bash -c "su - ye_cheng"
+docker exec -it ye_cheng_9f9c7b7b /bin/bash -c "su - ye_cheng"
 ```
 
 ## 脚本当前能力
@@ -137,7 +155,7 @@ docker exec -it ye_cheng_d3a5c06b /bin/bash -c "su - ye_cheng"
 | `APT_ONLY=1` | root 只装系统依赖 |
 | `SKIP_APT=1` | 普通用户跳过 apt |
 | `RUST_ONLY=1` | 只装 Rust 工具 |
-| `NPM_ONLY=1` | 只补 Node/uv/Python/hunk/Trellis，跳过 nvim/LazyVim |
+| `NPM_ONLY=1` | 只补 Node/uv/Python/hunk/Trellis/opencode，跳过 nvim/LazyVim |
 | `NVIM_ONLY=1` | 只做 nvim 源码编译 + tree-sitter CLI + `.bashrc` + LazyVim/Lazy sync，跳过 Rust/Node/uv/npm |
 | `FORCE_NVIM=1` | 强制重编 nvim |
 | `FORCE_LAZYVIM=1` | 备份旧配置并重建 LazyVim |
@@ -145,12 +163,17 @@ docker exec -it ye_cheng_d3a5c06b /bin/bash -c "su - ye_cheng"
 | `UPDATE_TS_PARSERS=1` | 安装/更新 LazyVim `ensure_installed` 的 Treesitter parser |
 | `TS_CLI_VERSION` | tree-sitter CLI 版本，默认 `0.27.2`，必须 >=0.26.1 |
 | `FORCE_RUST_TOOLS=1` | 强制重编所有 Rust 工具 |
-| `WITH_OPENCODE=1` | 额外安装 opencode |
+| `WITH_OPENCODE` | 默认 `1` 安装 opencode；设 `0` 跳过 |
+| `OPENCODE_VERSION` | 默认 `latest`（npm 包 `@opencode/cli`） |
 | `APT_MIRROR` | deb 源：`cn`/`ustc`/`off`/主机名/完整 URL |
 | `RUSTUP_DIST_SERVER` | rustup 工具链源 |
 | `RUSTUP_UPDATE_ROOT` | rustup 自更新源 |
 | `RUSTUP_INIT_URL` | rustup-init.sh 地址 |
 | `CARGO_REGISTRY` | cargo 源，`official` 用 crates.io |
+| `NPM_REGISTRY` | npm registry，默认随 `MIRROR` |
+| `NODE_DIST` | Node tarball 根 URL，默认随 `MIRROR` |
+| `GH_MIRRORS` | GitHub 镜像前缀，空格分隔；`none` 只用直连 |
+| `OPENSSL_TARBALL` | musl 静态 OpenSSL 源码地址 |
 | `PY_MIRROR` | uv Python 下载镜像，默认 NJU |
 | `DEVKIT_ROOT` | 默认 `~/.devkit` |
 
@@ -248,7 +271,7 @@ docker exec ye_cheng_d3a5c06b /bin/bash -c \
   `~/.config/nvim`（有 `.devkit-managed` 标记时）。
 - 清理：
   ```bash
-  docker exec -it ye_cheng_d3a5c06b /bin/bash -c \
+  docker exec -it ye_cheng_9f9c7b7b /bin/bash -c \
     "su - ye_cheng -c 'bash /home/ye_cheng/work/project/devkit/devkit-cleanup.sh'"
   ```
 - 清理会删除 `~/.devkit`、`.bashrc` 托管块，并按记录处理 nvim 配置和 uv 文件。
@@ -257,10 +280,11 @@ docker exec ye_cheng_d3a5c06b /bin/bash -c \
 
 可以直接把下面这段发给新会话：
 
-> 项目在 `/home/ye_cheng/work/project/devkit`，当前提交 `e8e68d3`。先读
-> `docs/HANDOFF.md`、`setup-ubuntu.sh`、`docs/使用方法.md`。Rust 工具、hunk/Trellis、
-> Neovim v0.12.6、LazyVim starter（32 个插件）、musl 静态 tree-sitter CLI 0.27.2
-> 与 35 个 parser 均已安装并验证，Lazy sync 二次执行成功；容器
-> `ye_cheng_d3a5c06b` 仍在运行。tree-sitter CLI 与 parser 无需再装。
-> 可选下一步：处理 LazyVim `:checkhealth` 剩余的可选工具（lazygit/fzf 等）、
-> 更新插件，或清理旧仓 `dev_dockerfiles` 里的过时副本。
+> 项目在 `/home/ye_cheng/work/project/devkit`，先读 `docs/HANDOFF.md`、
+> `setup-ubuntu.sh`、`docs/使用方法.md`。Rust 工具清单已改为 gitui + skim（`sk`），
+> 不装 lazygit/fzf；npm 侧默认安装 opencode（`@opencode/cli`）。2026-11-18
+> 核对的这台公司服务器上 `~/.devkit` 尚不存在，
+> 历史安装记录仅作参考，需重跑 setup 验证。当前容器 `ye_cheng_9f9c7b7b`，
+> 宿主是 Ubuntu 24.04。安装脚本只能在 Ubuntu 容器内运行，宿主机用
+> `devkit-up.sh` 启动容器。可选下一步：在容器内执行完整安装或 `NPM_ONLY=1`，
+> 重点验证 `sk` 的静态链接与 `opencode --version`。
