@@ -18,8 +18,11 @@ Ubuntu 容器内运行；宿主机只负责启动容器，不直接运行安装�
 
 ```text
 ~/.devkit/
-├── musl/bin/       musl 静态 Rust 工具 + tree-sitter CLI/wrapper
-├── bin/            uv/uvx（musl 静态）与 python3 软链
+├── musl/bin/       musl 静态 Rust 工具（含 uv/uvx）+ tree-sitter CLI/wrapper
+├── python-bin/     uv 安装的 Python 3.12 可执行文件（不加入全局 PATH）
+├── venvs/          Trellis/opencode 各自的 Python venv
+├── shims/          只为工具进程注入私有 PATH 的 trellis/tl/opencode shim
+├── uv-tools/       uv tool 安装的 Python CLI（可选）
 ├── nvim/           源码编译的 Neovim（glibc 基线取决于构建容器）
 ├── node/           Node.js 22 LTS
 ├── npm-global/     hunk / Trellis 等 npm 全局包
@@ -32,7 +35,8 @@ Ubuntu 容器内运行；宿主机只负责启动容器，不直接运行安装�
 
 `~/.bashrc` 只追加一段带
 `# >>> devkit (setup-ubuntu.sh) >>>` / `# <<< ... <<<` 标记的块，重复执行会先删旧块
-再写新块，不影响其他内容。
+再写新块，不影响其他内容。`python-bin` 不进入 PATH，避免覆盖容器的 `python3`；
+Trellis/opencode 通过 `shims/` 在各自进程中临时使用自己的 venv。
 
 ## 方式一：一键启动并安装
 
@@ -76,10 +80,10 @@ IMAGE=myreg.example.com/ubuntu20.04:dev ./devkit-up.sh --setup
 > 这个边界是强制的：完整安装不允许以 root 运行；root 只负责
 > `APT_ONLY=1` 的系统依赖，避免 `~/.devkit` 里的文件属主变成 root。
 
-只装 Rust 工具（当前阶段）：
+完整安装：
 
 ```bash
-./devkit-up.sh --rust
+./devkit-up.sh --setup
 ```
 
 只启动容器不安装：
@@ -128,12 +132,8 @@ SKIP_APT=1 bash /home/$USER/work/project/devkit/setup-ubuntu.sh
 > 制品，避免把 `~/.devkit` 里文件的属主写成 root。安装脚本本身只允许在容器内
 > 运行；宿主机只负责 `docker run` / `devkit-up.sh`。
 
-当前阶段只装 Rust 工具时，普通用户侧加 `RUST_ONLY=1`：
-
-```bash
-docker exec -it <容器> /bin/bash -c \
-  "su - $USER -c 'RUST_ONLY=1 SKIP_APT=1 bash /home/$USER/work/project/devkit/setup-ubuntu.sh'"
-```
+安装脚本按章节从上到下执行：预检/apt → Rust → Neovim → Node/TS-JS → Python
+→ `.bashrc` → 验收/清理。重跑是幂等的，已装好的工具会自动跳过。
 
 ## 安装内容
 
@@ -152,18 +152,23 @@ docker exec -it <容器> /bin/bash -c \
 | `fd`（fd-find） | `fd-find` |
 | `btm`（bottom） | `bottom`（`battery,zfs,gpu`：支持 Linux 上的 AMD/Intel GPU；关闭 `nvidia`，因为 NVML 仅支持 glibc） |
 | `zoxide` | `zoxide` |
+| `uv` / `uvx` | 官方 musl 静态预编译包；同时用于管理 Python |
 
 编译参数：`--target x86_64-unknown-linux-musl` + `target-feature=+crt-static`。
 Rust 现代 musl 默认产出 **static-PIE**：`file` 可能显示 `dynamically linked`，
 但 `readelf -l` 没有 `INTERP` 段、`ldd` 显示 `statically linked`，脚本按
 `PT_INTERP` 判定是否为静态，不满足会直接报错。
 
-### 其他
+### Neovim / TS-JS / Python
 
 - Neovim：`git ls-remote` 取最新 `vX.Y.Z` tag，源码编译到 `~/.devkit/nvim`；
+- tree-sitter CLI：源码编译为 musl 静态二进制，带 wrapper，供 nvim parser 使用；
 - LazyVim：克隆 starter 到 `~/.config/nvim`，自动加 OSC52 剪贴板设置；
 - Node.js 22 LTS：npmmirror 官方 tarball；
-- uv + Python 3.12：为 Trellis 提供 `>=3.9` 解释器；
+- uv + Python 3.12：uv 二进制在 Rust 阶段安装；Python 3.12 只装一份，Trellis 与
+  opencode 各自使用独立 venv（`~/.devkit/venvs/`），互不共享 site-packages；
+- basedpyright / ruff：`uv tool install` 到 `~/.devkit/uv-tool-bin`，与工具 venv 隔离；
+  由 `.bashrc` 的 PATH 提供给宿主机和其他共享 home 的容器；
 - hunk：npm 包 `hunkdiff`，默认固定 `0.24.0`（`0.24.1` 的 linux 平台包尚未同步到
   npmmirror；可用 `HUNK_VERSION=...` 覆盖）；
 - Trellis：npm 包 `@mindfoldhq/trellis@latest`；
@@ -199,9 +204,6 @@ DRY_RUN=1 bash /home/$USER/work/project/devkit/devkit-cleanup.sh
 
 | 环境变量 | 默认 | 说明 |
 |---|---|---|
-| `RUST_ONLY` | `0` | `1` 只装 Rust 工具和 yazi，跳过 nvim/node/npm/LazyVim |
-| `NPM_ONLY` | `0` | `1` 只补 Node/uv/Python/hunk/Trellis/opencode（Rust 工具已存在则跳过），跳过 nvim/LazyVim |
-| `NVIM_ONLY` | `0` | `1` 只做 nvim 源码编译 + `.bashrc` + LazyVim/Lazy sync，跳过 Rust/Node/uv/npm |
 | `MIRROR` | `cn` | `official` 切回官方默认源 |
 | `SKIP_APT` | `0` | 普通用户重跑时设为 `1` |
 | `APT_ONLY` | `0` | root 只装系统依赖 |
@@ -215,6 +217,13 @@ DRY_RUN=1 bash /home/$USER/work/project/devkit/devkit-cleanup.sh
 | `GH_MIRRORS` | ghfast + gh-proxy | GitHub 镜像前缀（空格分隔）；`none` 只用直连 |
 | `OPENSSL_TARBALL` | 清华/官方 | musl 静态 OpenSSL 源码地址 |
 | `PY_MIRROR` | NJU 镜像 | uv 下载 python-build-standalone 的镜像根 |
+| `PYPI_INDEX` | 清华（cn）/ 空（official） | uv 安装 venv 依赖与 `uv tool` 时的 PyPI 源 |
+
+> `MIRROR=cn` 时脚本会先探测各国内镜像，不可达的项自动回退官方源
+> （rustup→static.rust-lang.org、npm/Node→npmjs/nodejs.org、PyPI→pypi.org、
+> apt 与 OpenSSL→保留镜像自带源/官网），并在预检阶段打印回退提示。
+| `PYTHON_VERSION` | `3.12` | uv 托管的 Python 版本 |
+| `UV_VERSION` | 最新 release | uv musl 静态包版本；可固定避免 API 解析 |
 | `FORCE_NVIM` | `0` | 强制重编 nvim |
 | `FORCE_TS_CLI` | `0` | 强制重编 tree-sitter CLI（musl 静态） |
 | `UPDATE_TS_PARSERS` | `0` | `1` 安装/更新 LazyVim ensure_installed 的 parser |
@@ -238,7 +247,7 @@ CARGO_REGISTRY=sparse+https://mirrors.corp.example.com/crates.io-index/ \
 NPM_REGISTRY=https://npm.corp.example.com \
 NODE_DIST=https://mirrors.corp.example.com/node \
 GH_MIRRORS="https://git.corp.example.com/github-proxy/" \
-SKIP_APT=1 RUST_ONLY=1 bash setup-ubuntu.sh
+SKIP_APT=1 bash setup-ubuntu.sh
 ```
 
 `APT_MIRROR` 若填完整 URL，需指向 ubuntu 仓库根（例如
@@ -247,7 +256,7 @@ SKIP_APT=1 RUST_ONLY=1 bash setup-ubuntu.sh
 ## 耗时提示
 
 首次完整安装会编译 12 个 Rust 工具、musl 静态 OpenSSL、Neovim 和 tree-sitter CLI，
-另会下载 uv/Python；视机器性能大约 25–45 分钟。`UPDATE_TS_PARSERS=1` 时还会编译
+另会下载 Python；视机器性能大约 25–45 分钟。`UPDATE_TS_PARSERS=1` 时还会编译
 Treesitter parser。Rust 工具、nvim 和 tree-sitter CLI 都有“已存在则跳过”逻辑，
 失败后重跑只补未完成项。
 

@@ -1,6 +1,11 @@
 # 交接说明：当前状态与下一步（Neovim / LazyVim）
 
-> 最后更新：2026-11-18（Rust 工具清单改为 gitui + skim）
+> 最后更新：2026-11-20（uv 归入 Rust 阶段；Python 3.12 改为工具私有 venv）
+>
+> 2026-11-20 变更：`uv`/`uvx` 作为 musl 静态 Rust 工具装到 `~/.devkit/musl/bin`；
+> uv 托管的 Python 3.12 只装一份，Trellis 与 opencode 各自使用
+> `~/.devkit/venvs/` 下的独立 venv，并通过 `~/.devkit/shims/` 只在工具进程内
+> 注入 PATH。`python3` 不再加入全局 PATH，容器系统 Python 不会被覆盖。
 >
 > 2026-11-18 现状核对：当前这台公司服务器上没有 `~/.devkit`，旧容器
 > `ye_cheng_d3a5c06b` 也不在这台机器上；本机运行的是 `ye_cheng_9f9c7b7b`
@@ -54,7 +59,7 @@ zoxide 0.10.0
 静态判定使用 `readelf -l` 无 `INTERP`，是 static-PIE。
 
 2026-11-18 起脚本新增 `skim`；`cargo install skim` 产出的命令是 `sk`，
-已加入 `RUST_TOOLS` 和验收清单。重跑 `RUST_ONLY=1` 后会出现在
+已加入 `RUST_TOOLS` 和验收清单。重跑完整安装后会出现下
 `~/.devkit/musl/bin/sk`。`gitui` 与 `sk` 分别替代 lazygit、fzf。
 
 ### Node / npm 工具
@@ -154,9 +159,6 @@ docker exec -it ye_cheng_9f9c7b7b /bin/bash -c "su - ye_cheng"
 |---|---|
 | `APT_ONLY=1` | root 只装系统依赖 |
 | `SKIP_APT=1` | 普通用户跳过 apt |
-| `RUST_ONLY=1` | 只装 Rust 工具 |
-| `NPM_ONLY=1` | 只补 Node/uv/Python/hunk/Trellis/opencode，跳过 nvim/LazyVim |
-| `NVIM_ONLY=1` | 只做 nvim 源码编译 + tree-sitter CLI + `.bashrc` + LazyVim/Lazy sync，跳过 Rust/Node/uv/npm |
 | `FORCE_NVIM=1` | 强制重编 nvim |
 | `FORCE_LAZYVIM=1` | 备份旧配置并重建 LazyVim |
 | `FORCE_TS_CLI=1` | 强制重编 tree-sitter CLI（musl 静态） |
@@ -175,6 +177,9 @@ docker exec -it ye_cheng_9f9c7b7b /bin/bash -c "su - ye_cheng"
 | `GH_MIRRORS` | GitHub 镜像前缀，空格分隔；`none` 只用直连 |
 | `OPENSSL_TARBALL` | musl 静态 OpenSSL 源码地址 |
 | `PY_MIRROR` | uv Python 下载镜像，默认 NJU |
+| `PYPI_INDEX` | uv 的 PyPI 源，cn 默认清华 |
+| `PYTHON_VERSION` | uv 托管的 Python 版本，默认 `3.12` |
+| `UV_VERSION` | uv musl 静态包版本；默认最新 release |
 | `DEVKIT_ROOT` | 默认 `~/.devkit` |
 
 默认镜像：
@@ -189,8 +194,6 @@ python: https://mirrors.nju.edu.cn/github-release/astral-sh/python-build-standal
 `devkit-up.sh`：
 
 ```bash
-./devkit-up.sh --rust   # root apt + 普通用户 Rust-only
-./devkit-up.sh --nvim   # root apt + 普通用户 Neovim/LazyVim only
 ./devkit-up.sh --setup  # root apt + 普通用户完整安装
 ./devkit-up.sh --apt    # root apt only
 ```
@@ -254,17 +257,16 @@ docker exec ye_cheng_d3a5c06b /bin/bash -c \
    glibc < 2.31 的容器（18.04、Alpine/musl）不能运行这个构建。
    非交互 shell 不读 `.bashrc`，脚本里仍用绝对路径。
 3. **插件更新**：`nvim --headless "+Lazy! update" +qa`。
-4. **parser 更新**：`NVIM_ONLY=1 SKIP_APT=1 UPDATE_TS_PARSERS=1 bash setup-ubuntu.sh`。
-5. **重跑安装**：`NVIM_ONLY=1` 幂等；已完成的 nvim 会直接跳过，`FORCE_NVIM=1`
+4. **parser 更新**：`SKIP_APT=1 UPDATE_TS_PARSERS=1 bash setup-ubuntu.sh`。
+5. **重跑安装**：完整安装幂等；已完成的 nvim 会直接跳过，`FORCE_NVIM=1`
    可强制重编。
 
 ## 清理与状态
 
 - 安装状态：`~/.devkit/state/setup.env`
-- 当前记录（`SETUP_AT=2026-11-11T13:44:15+00:00`）：`RUST_ONLY=0`、`NPM_ONLY=0`、
-  `NVIM_ONLY=1`、`NVIM_CONFIG_CREATED=1`；另有 `BASH_RC_CREATED=0`、
+- 历史记录（`SETUP_AT=2026-11-11T13:44:15+00:00`）：`NVIM_CONFIG_CREATED=1`；另有 `BASH_RC_CREATED=0`、
   `UV_LOCAL_PY_CREATED=1`、`UV_RECEIPT_CREATED=1`、`UV_SHARE_CREATED=1`。
-  注意：文件内容来自 `NVIM_ONLY=1` 那次安装，不是最后一次完整安装；
+  注意：文件内容来自一次历史的分阶段安装，不是最后一次完整安装；
   之后 `UPDATE_TS_PARSERS=1` 的补装没有刷新 `SETUP_AT`，核对时以文件内容为准。
 - `NVIM_DATA_CREATED/NVIM_STATE_CREATED/NVIM_CACHE_CREATED=0`：这些目录在
   本次安装前已存在，因此清理脚本会保留它们，只删除由 setup 创建的
@@ -286,5 +288,5 @@ docker exec ye_cheng_d3a5c06b /bin/bash -c \
 > 核对的这台公司服务器上 `~/.devkit` 尚不存在，
 > 历史安装记录仅作参考，需重跑 setup 验证。当前容器 `ye_cheng_9f9c7b7b`，
 > 宿主是 Ubuntu 24.04。安装脚本只能在 Ubuntu 容器内运行，宿主机用
-> `devkit-up.sh` 启动容器。可选下一步：在容器内执行完整安装或 `NPM_ONLY=1`，
+> `devkit-up.sh` 启动容器。可选下一步：在容器内执行完整安装，
 > 重点验证 `sk` 的静态链接与 `opencode --version`。

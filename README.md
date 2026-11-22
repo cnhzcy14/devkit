@@ -9,6 +9,6 @@
 
 脚本：
 
-- `setup-ubuntu.sh`：安装入口，支持 `APT_ONLY` / `SKIP_APT` / `RUST_ONLY` / `NPM_ONLY` / `NVIM_ONLY` / `UPDATE_TS_PARSERS`
+- `setup-ubuntu.sh`：安装入口，支持 `APT_ONLY` / `SKIP_APT` / `UPDATE_TS_PARSERS` 等开关
 - `devkit-up.sh`：宿主机侧启动容器并执行安装
 - `devkit-cleanup.sh`：删除 `~/.devkit` 和 `.bashrc` 托管块（宿主机或容器内均可）

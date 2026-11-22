@@ -11,6 +11,15 @@
 #   * .bashrc 只写一段带标记的块，重复执行自动替换，不碰用户其他内容；
 #   * 默认全部使用国内镜像，可用 MIRROR=official 切回官方。
 #
+# 章节结构（函数按章节组织，实际执行顺序见文件末尾 main）：
+#   1 预检与系统依赖
+#   2 Rust 工具链与 CLI（musl 静态；含 uv、tree-sitter CLI、yazi）
+#   3 Neovim / LazyVim / Treesitter
+#   4 Node.js 与 TS/JS 工具（hunk / Trellis / opencode）
+#   5 Python 运行时与工具 venv / shim
+#   6 .bashrc 托管块
+#   7 验收与清理
+#
 # 运行方式（ubuntu:20.04 默认无 sudo，推荐分两步）：
 #   1) root 装系统依赖：
 #      APT_ONLY=1 bash /home/$USER/dev_dockerfiles/setup-ubuntu.sh
@@ -19,12 +28,6 @@
 #   或直接使用宿主机侧 devkit-up.sh --setup 一键完成。
 #
 # 常用开关：
-#   RUST_ONLY=1            只装 Rust 工具（keifu/yazi/gitui/sk/ducker/eza/bat/
-#                          rg/fd/btm/zoxide），跳过 nvim/node/uv/npm/LazyVim
-#   NPM_ONLY=1            只补 Node/uv/Python/hunk/Trellis/opencode
-#                         （Rust 工具已存在则跳过），跳过 nvim/LazyVim
-#   NVIM_ONLY=1           只做 Neovim 源码编译 + .bashrc 托管块 + LazyVim/Lazy sync，
-#                         跳过 Rust 工具、Node/uv/npm 阶段（它们应已装好）
 #   MIRROR=official        整套默认源切回官方（默认 cn）
 #   APT_MIRROR=...         deb 源：默认 cn(清华)；可填 ustc、off、主机名或完整 URL
 #   RUSTUP_DIST_SERVER=... rustup 工具链源（默认 https://rsproxy.cn）
@@ -34,6 +37,7 @@
 #                         填 official 用 crates.io，或公司 sparse/git 索引 URL
 #   NPM_REGISTRY=...       npm 源；默认 cn=npmmirror，official=npmjs
 #   NODE_DIST=...          Node tarball 根 URL；默认 cn=npmmirror，official=nodejs.org
+#   PYPI_INDEX=...         uv/PyPI 源；默认 cn=清华，official 留空走 pypi.org
 #   GH_MIRRORS=...         GitHub 镜像前缀（空格分隔）；none 表示只用直连
 #   OPENSSL_TARBALL=...    musl 静态 OpenSSL 源码 tarball 地址（ducker 用）
 #   SKIP_APT=1             跳过 apt（镜像已预装依赖）
@@ -53,9 +57,6 @@ set -Eeuo pipefail
 export DEBIAN_FRONTEND=noninteractive
 
 MIRROR="${MIRROR:-cn}"
-RUST_ONLY="${RUST_ONLY:-0}"
-NPM_ONLY="${NPM_ONLY:-0}"
-NVIM_ONLY="${NVIM_ONLY:-0}"
 SKIP_APT="${SKIP_APT:-0}"
 FORCE_NVIM="${FORCE_NVIM:-0}"
 FORCE_RUST_TOOLS="${FORCE_RUST_TOOLS:-0}"
@@ -66,6 +67,8 @@ UPDATE_TS_PARSERS="${UPDATE_TS_PARSERS:-0}"
 TS_CLI_VERSION="${TS_CLI_VERSION:-0.27.2}"
 HUNK_VERSION="${HUNK_VERSION:-0.24.0}"
 OPENCODE_VERSION="${OPENCODE_VERSION:-latest}"
+UV_VERSION="${UV_VERSION:-}"
+PYTHON_VERSION="${PYTHON_VERSION:-3.12}"
 DEVKIT_ROOT="${DEVKIT_ROOT:-$HOME/.devkit}"
 APT_MIRROR="${APT_MIRROR:-}"
 RUSTUP_DIST_SERVER="${RUSTUP_DIST_SERVER:-}"
@@ -73,10 +76,12 @@ RUSTUP_UPDATE_ROOT="${RUSTUP_UPDATE_ROOT:-}"
 RUSTUP_INIT_URL="${RUSTUP_INIT_URL:-}"
 CARGO_REGISTRY="${CARGO_REGISTRY:-}"
 PY_MIRROR="${PY_MIRROR:-}"
+PYPI_INDEX="${PYPI_INDEX:-}"
 MUSL_PREFIX="$DEVKIT_ROOT/musl"
 MUSL_BIN="$MUSL_PREFIX/bin"
+UV_BIN="$MUSL_BIN/uv"
 
-export PATH="$MUSL_BIN:$DEVKIT_ROOT/bin:$DEVKIT_ROOT/nvim/bin:$DEVKIT_ROOT/node/bin:$DEVKIT_ROOT/cargo/bin:$PATH"
+export PATH="$MUSL_BIN:$DEVKIT_ROOT/nvim/bin:$DEVKIT_ROOT/node/bin:$DEVKIT_ROOT/cargo/bin:$PATH"
 export RUSTUP_HOME="$DEVKIT_ROOT/rustup"
 export CARGO_HOME="$DEVKIT_ROOT/cargo"
 export CC_x86_64_unknown_linux_musl="${CC_x86_64_unknown_linux_musl:-musl-gcc}"
@@ -88,7 +93,11 @@ export CXXFLAGS_x86_64_unknown_linux_musl="$CXXFLAGS"
 export NPM_CONFIG_PREFIX="$DEVKIT_ROOT/npm-global"
 export NPM_CONFIG_CACHE="$DEVKIT_ROOT/cache/npm"
 export UV_PYTHON_INSTALL_DIR="$DEVKIT_ROOT/uv-python"
+export UV_PYTHON_BIN_DIR="$DEVKIT_ROOT/python-bin"
+export UV_PYTHON_INSTALL_BIN=1
 export UV_CACHE_DIR="$DEVKIT_ROOT/cache/uv"
+export UV_TOOL_DIR="$DEVKIT_ROOT/uv-tools"
+export UV_TOOL_BIN_DIR="$DEVKIT_ROOT/uv-tool-bin"
 
 STATE_DIR="$DEVKIT_ROOT/state"
 BACKUP_DIR="$DEVKIT_ROOT/backups"
@@ -96,6 +105,8 @@ NVIM_SRC="$DEVKIT_ROOT/src/neovim"
 NVIM_PREFIX="$DEVKIT_ROOT/nvim"
 NODE_PREFIX="$DEVKIT_ROOT/node"
 NPM_PREFIX="$DEVKIT_ROOT/npm-global"
+VENV_DIR="$DEVKIT_ROOT/venvs"
+SHIM_DIR="$DEVKIT_ROOT/shims"
 OPENSSL_MUSL="$DEVKIT_ROOT/openssl-musl"
 MUSL_TARGET="x86_64-unknown-linux-musl"
 NVIM_CONFIG="$HOME/.config/nvim"
@@ -114,7 +125,38 @@ if [ "$MIRROR" = "cn" ]; then
   NPM_REGISTRY="${NPM_REGISTRY:-https://registry.npmmirror.com}"
   NODE_DIST="${NODE_DIST:-https://npmmirror.com/mirrors/node}"
   : "${PY_MIRROR:=https://mirrors.nju.edu.cn/github-release/astral-sh/python-build-standalone}"
+  : "${PYPI_INDEX:=https://pypi.tuna.tsinghua.edu.cn/simple}"
   : "${OPENSSL_TARBALL:=https://mirrors.tuna.tsinghua.edu.cn/ubuntu/pool/main/o/openssl/openssl_1.1.1f.orig.tar.gz}"
+
+  # 国内镜像在部分办公网/代理环境下不可达：逐个探测，不通就自动回退官方源。
+  probe(){
+    curl -fsS -o /dev/null --max-time 6 "$1" 2>/dev/null
+  }
+  fallback_note(){ MIRROR_FALLBACKS+=("$*"); }
+  if ! probe "https://rsproxy.cn/"; then
+    fallback_note "rsproxy.cn 不可达，rustup/cargo 回退官方源"
+    RUSTUP_DIST_SERVER="https://static.rust-lang.org"
+    RUSTUP_UPDATE_ROOT="https://static.rust-lang.org/rustup"
+    RUSTUP_INIT_URL="https://sh.rustup.rs"
+    CARGO_REGISTRY="official"
+  fi
+  if ! probe "https://registry.npmmirror.com/-/binary/node/"; then
+    fallback_note "npmmirror 不可达，npm/Node 回退官方源"
+    NPM_REGISTRY="https://registry.npmjs.org"
+    NODE_DIST="https://nodejs.org/dist"
+  fi
+  if ! probe "https://mirrors.nju.edu.cn/"; then PY_MIRROR=""; fi
+  if ! probe "https://mirrors.tuna.tsinghua.edu.cn/ubuntu/pool/"; then
+    OPENSSL_TARBALL="https://www.openssl.org/source/openssl-1.1.1f.tar.gz"
+  fi
+  if ! probe "https://pypi.tuna.tsinghua.edu.cn/simple/"; then
+    fallback_note "清华 PyPI 不可达，uv 回退 pypi.org"
+    PYPI_INDEX=""
+  fi
+  if ! probe "https://mirrors.tuna.tsinghua.edu.cn/ubuntu/"; then
+    [ -n "${APT_MIRROR:-}" ] || APT_MIRROR=off
+    fallback_note "清华 apt 源不可达，保留镜像自带 apt 源"
+  fi
 else
   if [ -z "${GH_MIRRORS:-}" ] || [ "${GH_MIRRORS}" = "none" ]; then
     GH_MIRRORS=("")
@@ -143,6 +185,7 @@ if [ -z "$RUSTUP_INIT_URL" ]; then
 fi
 
 PHASE="init"
+MIRROR_FALLBACKS=()
 log(){ printf '\033[1;32m[%s]\033[0m %s\n' "$(date +%H:%M:%S)" "$*"; }
 warn(){ printf '\033[1;33m[!]\033[0m %s\n' "$*"; }
 die(){ printf '\033[1;31m[x]\033[0m %s\n' "$*" >&2; exit 1; }
@@ -212,20 +255,13 @@ backup_path(){
   printf '%s/%s-%s' "$BACKUP_DIR" "$1" "$(date +%F-%H%M%S)"
 }
 
-# ---------------------------- 1. 预检 + apt ---------------------------------
+# ============================================================================
+# 1. 预检与系统依赖
+# ============================================================================
 preflight(){
   step "预检"
-  if [ "$NVIM_ONLY" = "1" ] && { [ "$RUST_ONLY" = "1" ] || [ "$NPM_ONLY" = "1" ]; }; then
-    die "NVIM_ONLY=1 不能与 RUST_ONLY/NPM_ONLY 同时使用"
-  fi
-  if [ "$NVIM_ONLY" = "1" ]; then
-    local missing=()
-    for c in git make cmake ninja cc; do
-      command -v "$c" >/dev/null 2>&1 || missing+=("$c")
-    done
-    [ "${#missing[@]}" -eq 0 ] \
-      || die "NVIM_ONLY 需要构建工具：${missing[*]}。请先以 root 运行 APT_ONLY=1 装依赖"
-  fi
+  local m
+  for m in ${MIRROR_FALLBACKS+"${MIRROR_FALLBACKS[@]}"}; do warn "$m"; done
   [ -r /etc/os-release ] || die "无法识别系统"
   . /etc/os-release
   log "系统：${ID:-?} ${VERSION_ID:-?}  架构：$(uname -m)"
@@ -266,21 +302,23 @@ apt_mirror_base(){
     ""|off) return 1 ;;
     cn|tuna) printf 'http://mirrors.tuna.tsinghua.edu.cn/ubuntu' ;;
     ustc)   printf 'http://mirrors.ustc.edu.cn/ubuntu' ;;
+    official) return 1 ;;  # 保留镜像自带官方源，不替换
     http://*|https://*) printf '%s' "${APT_MIRROR%/}" ;;
     *)      printf 'http://%s/ubuntu' "${APT_MIRROR%/}" ;;
   esac
 }
 
 apt_set_mirror(){
-  local base="$1" f
+  local base="$1"
   # 20.04 基础镜像默认没有 ca-certificates；首次装依赖先用 HTTP 落地证书
   if ! as_root test -f /etc/ssl/certs/ca-certificates.crt; then
     base="${base/#https:\/\//http://}"
   fi
+  # 把 sources.list 里任意 ubuntu 仓库基址（官方或别的镜像）整体替换为目标源
   as_root bash -c "set -e; f=/etc/apt/sources.list; cp -n \"\$f\" \"\$f.devkit.bak\" 2>/dev/null || true;
-    sed -ri 's#http(s)?://(archive|security)\\.ubuntu\\.com/ubuntu#${base}#g' \"\$f\"
+    sed -ri 's#(https?://[^ /]+(/[^ /]+)*?)/ubuntu#${base}#g' \"\$f\"
     for x in /etc/apt/sources.list.d/*.list; do [ -f \"\$x\" ] || continue;
-      sed -ri 's#http(s)?://(archive|security)\\.ubuntu\\.com/ubuntu#${base}#g' \"\$x\"; done"
+      sed -ri 's#(https?://[^ /]+(/[^ /]+)*?)/ubuntu#${base}#g' \"\$x\"; done"
 }
 
 apt_phase(){
@@ -311,7 +349,10 @@ apt_phase(){
   log "apt 依赖就绪"
 }
 
-# ---------------------------- 2. Rust musl 工具链 ---------------------------
+# ============================================================================
+# 2. Rust 工具链与 CLI（musl 静态）
+# ============================================================================
+# ---------------------------- 2.1 rustup 与 musl 工具链 --------------------
 rust_phase(){
   step "Rust musl 工具链"
   if [ -x "$CARGO_HOME/bin/rustup" ]; then
@@ -356,8 +397,13 @@ ensure_musl_openssl(){
   rm -rf /tmp/devkit-openssl
   mkdir -p /tmp/devkit-openssl
   local tar=/tmp/devkit-openssl/openssl.tar.gz
-  curl -fSL --retry 3 -o "$tar" "$OPENSSL_TARBALL"
-  tar -xzf "$tar" -C /tmp/devkit-openssl --strip-components=1
+  # 先用配置的源；失败再依次试官方站与 GitHub（镜像不通时仍能完成）
+  curl -fSL --retry 3 -o "$tar" "$OPENSSL_TARBALL" \
+    || curl -fSL --retry 3 -o "$tar" "https://www.openssl.org/source/openssl-1.1.1f.tar.gz" \
+    || curl -fSL --retry 3 -o "$tar" "https://github.com/openssl/openssl/releases/download/OpenSSL_1_1_1f/openssl-1.1.1f.tar.gz" \
+    || die "OpenSSL 源码下载失败（OPENSSL_TARBALL=$OPENSSL_TARBALL）"
+  tar -xzf "$tar" -C /tmp/devkit-openssl --strip-components=1 \
+    || die "OpenSSL 源码解压失败（下载内容不是 tar.gz）"
   cd /tmp/devkit-openssl
   CFLAGS="-idirafter /usr/include -idirafter /usr/include/x86_64-linux-gnu" \
   CC=musl-gcc AR=ar RANLIB=ranlib ./Configure --prefix="$OPENSSL_MUSL" --libdir=lib \
@@ -370,7 +416,42 @@ ensure_musl_openssl(){
   log "musl OpenSSL → $OPENSSL_MUSL"
 }
 
-# ---------------------------- 3. Rust 工具（musl 静态） ---------------------
+# uv 是 Rust 编写的 musl 静态工具，因此和 Rust CLI 一起安装到 musl/bin。
+install_uv_binary(){
+  local dest="$UV_BIN" destx="$MUSL_BIN/uvx" tag asset url tmpd uv_bin uvx_bin
+  if [ -x "$dest" ] && [ -x "$destx" ] && [ "$FORCE_RUST_TOOLS" != "1" ] \
+     && "$dest" --version 2>/dev/null | grep -q 'linux-musl'; then
+    log "uv 已存在，跳过（FORCE_RUST_TOOLS=1 重装）"
+  else
+    tag="${UV_VERSION#v}"
+    if [ -z "$tag" ]; then
+      tag=$(curl -fsSL --max-time 20 https://api.github.com/repos/astral-sh/uv/releases/latest 2>/dev/null \
+            | sed -n 's/.*"tag_name": "\([^"]*\)".*/\1/p' | head -1 || true)
+    fi
+    [ -n "$tag" ] || tag="0.13.7"
+    asset="uv-x86_64-unknown-linux-musl.tar.gz"
+    url="https://github.com/astral-sh/uv/releases/download/$tag/$asset"
+    tmpd=$(mktemp -d) || return 1
+    if ! gh_url "$url" "$tmpd/$asset"; then rm -rf "$tmpd"; return 1; fi
+    tar -xzf "$tmpd/$asset" -C "$tmpd" || { rm -rf "$tmpd"; return 1; }
+    uv_bin=$(find "$tmpd" -type f -name uv | head -1)
+    uvx_bin=$(find "$tmpd" -type f -name uvx | head -1)
+    [ -n "$uv_bin" ] && [ -n "$uvx_bin" ] || { rm -rf "$tmpd"; return 1; }
+    install -m 0755 "$uv_bin" "$dest"
+    install -m 0755 "$uvx_bin" "$destx"
+    rm -rf "$tmpd"
+    # 旧版本曾把 uv 放在 ~/.devkit/bin；迁移后删除，避免两份。
+    rm -f "$DEVKIT_ROOT/bin/uv" "$DEVKIT_ROOT/bin/uvx"
+    log "uv musl 静态包安装完成：$(basename "$url")"
+  fi
+  [ -x "$dest" ] || { warn "uv 未生成"; return 1; }
+  is_static "$dest" || { warn "uv 不是静态链接：$(file "$dest")"; return 1; }
+  "$dest" --version 2>/dev/null | grep -q 'linux-musl' \
+    || { warn "uv 不是 linux-musl 版本：$("$dest" --version 2>&1 | head -1)"; return 1; }
+  log "uv 静态校验通过：$("$dest" --version | head -1)"
+}
+
+# ---------------------------- 2.2 Rust CLI 工具 -----------------------------
 # 格式：crate|binary|额外环境（none|openssl）
 RUST_TOOLS=(
   "keifu|keifu|none"
@@ -433,6 +514,10 @@ rust_tools_phase(){
       failed+=("$crate")
     fi
   done
+  if ! install_uv_binary; then
+    warn "安装失败：uv（Rust musl 静态）"
+    failed+=("uv")
+  fi
   if [ "${#failed[@]}" -gt 0 ]; then
     die "以下 Rust 工具安装失败：${failed[*]}"
   fi
@@ -442,7 +527,7 @@ rust_tools_phase(){
   log "Rust 工具全部就绪"
 }
 
-# ---------------------------- 3b. yazi / ya（musl 预编译或源码） ------------
+# ---------------------------- 2.3 yazi / ya --------------------------------
 yazi_version(){
   local v idx=""
   case "$CARGO_REGISTRY" in
@@ -521,7 +606,7 @@ install_yazi(){
   log "yazi/ya 源码编译完成"
 }
 
-# ---------------------------- 3c. tree-sitter CLI（musl 静态） -------------
+# ---------------------------- 2.4 tree-sitter CLI（供 Neovim 用） ----------
 ts_cli_phase(){
   step "tree-sitter CLI（musl 静态）"
   mkdir -p "$MUSL_BIN"
@@ -574,7 +659,24 @@ EOF
   log "tree-sitter CLI 静态校验通过"
 }
 
-# ---------------------------- 4. Neovim（最新 tag，源码编译） ---------------
+# ============================================================================
+# 3. Neovim / LazyVim / Treesitter
+# ============================================================================
+track_nvim_dir(){
+  local dir="$1" key="$2"
+  if [ -e "$dir" ]; then state_set_once "$key" 0; else state_set_once "$key" 1; fi
+}
+
+# tree-sitter CLI 本身是 musl 构建，其 cc crate 会按 musl target 默认选 musl-gcc。
+# nvim-treesitter 编译 parser 时继承本脚本的环境，所以必须先切到 glibc 编译器。
+use_glibc_cc_for_nvim(){
+  export CC=/usr/bin/cc CXX=/usr/bin/c++
+  export CC_x86_64_unknown_linux_musl=/usr/bin/cc
+  export CXX_x86_64_unknown_linux_musl=/usr/bin/c++
+  unset CFLAGS CXXFLAGS CFLAGS_x86_64_unknown_linux_musl CXXFLAGS_x86_64_unknown_linux_musl
+}
+
+# ---------------------------- 3.1 Neovim（源码编译） -----------------------
 latest_nvim_tag(){
   local refs tag m
   refs=$(timeout 25 git ls-remote --tags --refs https://github.com/neovim/neovim.git 2>/dev/null || true)
@@ -655,165 +757,7 @@ nvim_phase(){
   "$NVIM_PREFIX/bin/nvim" --headless +qa >/dev/null 2>&1 || warn "nvim headless 自检异常"
 }
 
-# ---------------------------- 5. Node.js（官方 tarball 镜像） ----------------
-node_phase(){
-  step "Node.js 22 LTS"
-  mkdir -p "$NODE_PREFIX" "$NPM_PREFIX"
-  if [ -x "$NODE_PREFIX/bin/node" ]; then
-    log "node 已存在：$("$NODE_PREFIX/bin/node" --version)"
-  else
-    local arch=x64 list ver file url tmp
-    [ "$(uname -m)" = "aarch64" ] && arch=arm64
-    tmp=$(mktemp)
-    if curl -fsSL --retry 2 --connect-timeout 8 \
-      "https://registry.npmmirror.com/-/binary/node/latest-v22.x/" -o "$tmp"; then
-      file=$(grep -oE "node-v22\.[0-9]+\.[0-9]+-linux-${arch}\.tar\.xz" "$tmp" | sort -uV | tail -1)
-    fi
-    if [ -z "$file" ]; then
-      curl -fsSL --retry 2 "https://nodejs.org/dist/latest-v22.x/" -o "$tmp"
-      file=$(grep -oE "node-v22\.[0-9]+\.[0-9]+-linux-${arch}\.tar\.xz" "$tmp" | head -1)
-    fi
-    rm -f "$tmp"
-    [ -n "$file" ] || die "无法解析 Node 22 版本号"
-    ver="${file#node-v}"; ver="${ver%-linux-${arch}.tar.xz}"
-    url="$NODE_DIST/v${ver}/${file}"
-    log "下载 $url"
-    curl -fSL --retry 3 -o /tmp/devkit-node.tar.xz "$url" \
-      || curl -fSL --retry 3 -o /tmp/devkit-node.tar.xz "https://nodejs.org/dist/v${ver}/${file}"
-    rm -rf /tmp/devkit-node-dir; mkdir -p /tmp/devkit-node-dir
-    tar -xJf /tmp/devkit-node.tar.xz -C /tmp/devkit-node-dir
-    rm -rf "$NODE_PREFIX"; mv "/tmp/devkit-node-dir/node-v${ver}-linux-${arch}" "$NODE_PREFIX"
-    rm -rf /tmp/devkit-node-dir /tmp/devkit-node.tar.xz
-    log "node 安装完成：$("$NODE_PREFIX/bin/node" --version)"
-  fi
-  "$NODE_PREFIX/bin/node" -v
-  "$NODE_PREFIX/bin/npm" --version
-}
-
-# ---------------------------- 6. uv + Python 3.12 ---------------------------
-uv_install_musl(){
-  local tag asset url tmpd uv_bin uvx_bin
-  tag=$(curl -fsSL --max-time 20 https://api.github.com/repos/astral-sh/uv/releases/latest 2>/dev/null \
-        | sed -n 's/.*"tag_name": "\([^"]*\)".*/\1/p' | head -1 || true)
-  [ -n "$tag" ] || tag="0.13.7"
-  asset="uv-x86_64-unknown-linux-musl.tar.gz"
-  url="https://github.com/astral-sh/uv/releases/download/$tag/$asset"
-  tmpd=$(mktemp -d) || return 1
-  if ! gh_url "$url" "$tmpd/$asset"; then rm -rf "$tmpd"; return 1; fi
-  tar -xzf "$tmpd/$asset" -C "$tmpd" || { rm -rf "$tmpd"; return 1; }
-  uv_bin=$(find "$tmpd" -type f -name uv | head -1)
-  uvx_bin=$(find "$tmpd" -type f -name uvx | head -1)
-  [ -n "$uv_bin" ] || { rm -rf "$tmpd"; return 1; }
-  rm -f "$DEVKIT_ROOT/bin/uv" "$DEVKIT_ROOT/bin/uvx"
-  install -m 0755 "$uv_bin" "$DEVKIT_ROOT/bin/uv"
-  [ -n "$uvx_bin" ] && install -m 0755 "$uvx_bin" "$DEVKIT_ROOT/bin/uvx"
-  rm -rf "$tmpd"
-  log "uv musl 静态包安装完成：$(basename "$url")"
-}
-
-uv_phase(){
-  step "uv + Python 3.12（Trellis 需要 >=3.9）"
-  mkdir -p "$DEVKIT_ROOT/bin" "$UV_PYTHON_INSTALL_DIR"
-  # 记录 uv 在 ~/.devkit 之外创建的文件，供清理脚本精确删除
-  if [ -e "$HOME/.local/bin/python3.12" ]; then state_set_once UV_LOCAL_PY_CREATED 0
-  else state_set_once UV_LOCAL_PY_CREATED 1; fi
-  if [ -e "$HOME/.config/uv/uv-receipt.json" ]; then state_set_once UV_RECEIPT_CREATED 0
-  else state_set_once UV_RECEIPT_CREATED 1; fi
-  if [ -e "$HOME/.local/share/uv" ]; then state_set_once UV_SHARE_CREATED 0
-  else state_set_once UV_SHARE_CREATED 1; fi
-  if [ -x "$DEVKIT_ROOT/bin/uv" ] \
-     && "$DEVKIT_ROOT/bin/uv" --version 2>/dev/null | grep -q 'linux-musl'; then
-    log "uv 已是 musl 静态：$("$DEVKIT_ROOT/bin/uv" --version)"
-  elif uv_install_musl; then
-    :
-  elif curl -LsSf --retry 2 https://astral.sh/uv/install.sh \
-       | env UV_INSTALL_DIR="$DEVKIT_ROOT/bin" UV_NO_MODIFY_PATH=1 sh; then
-    warn "musl 静态包下载失败，已回退官方安装脚本（可能是 glibc 版）"
-  else
-    warn "musl 包和官方脚本均失败，改用 pip 镜像安装"
-    python3 -m pip install --prefix "$DEVKIT_ROOT/uv-pip" --no-cache-dir \
-      -i https://pypi.tuna.tsinghua.edu.cn/simple uv
-    rm -f "$DEVKIT_ROOT/bin/uv"
-    ln -sf "$DEVKIT_ROOT/uv-pip/bin/uv" "$DEVKIT_ROOT/bin/uv"
-  fi
-  [ -x "$DEVKIT_ROOT/bin/uv" ] || die "uv 安装失败"
-  if [ -n "$PY_MIRROR" ]; then export UV_PYTHON_INSTALL_MIRROR="$PY_MIRROR"; fi
-  if ! "$DEVKIT_ROOT/bin/uv" python install 3.12; then
-    warn "uv 镜像下载失败，改试官方源"
-    unset UV_PYTHON_INSTALL_MIRROR
-    "$DEVKIT_ROOT/bin/uv" python install 3.12 || die "Python 3.12 安装失败"
-  fi
-  local py
-  py=$("$DEVKIT_ROOT/bin/uv" python find 3.12)
-  [ -x "$py" ] || die "找不到 uv 托管的 Python 3.12"
-  ln -sf "$py" "$DEVKIT_ROOT/bin/python3"
-  ln -sf "$py" "$DEVKIT_ROOT/bin/python"
-  log "python3 → $py（$("$py" --version)）"
-}
-
-# ---------------------------- 7. hunk / Trellis（npm） ----------------------
-npm_tools_phase(){
-  step "hunk / Trellis"
-  mkdir -p "$NPM_PREFIX"
-  local npm="$NODE_PREFIX/bin/npm" opts=(--global --prefix "$NPM_PREFIX"
-    --registry "$NPM_REGISTRY" --no-audit --no-fund)
-  export PATH="$NPM_PREFIX/bin:$PATH"
-
-  if ! command -v hunk >/dev/null 2>&1; then
-    log "安装 hunkdiff@$HUNK_VERSION"
-    if ! "$npm" install "${opts[@]}" "hunkdiff@$HUNK_VERSION"; then
-      warn "hunk $HUNK_VERSION 失败，尝试 0.23.0"
-      "$npm" install "${opts[@]}" "hunkdiff@0.23.0" || warn "hunk 安装失败"
-    fi
-  fi
-  if command -v hunk >/dev/null 2>&1; then
-    log "hunk ✓ $(hunk --version 2>/dev/null | head -1 || echo '')"
-  else
-    warn "hunk 不在 PATH，检查 npm 可选平台包是否可用"
-  fi
-
-  if ! command -v trellis >/dev/null 2>&1; then
-    log "安装 @mindfoldhq/trellis@latest"
-    "$npm" install "${opts[@]}" "@mindfoldhq/trellis@latest" || warn "Trellis 安装失败"
-  fi
-  if command -v trellis >/dev/null 2>&1; then
-    log "trellis ✓ $(trellis --version 2>/dev/null | head -1 || echo '')"
-  else
-    warn "trellis 不在 PATH"
-  fi
-
-  if [ "$WITH_OPENCODE" = "1" ]; then
-    local oc="$NPM_PREFIX/bin/opencode"
-    if [ -x "$oc" ] && "$oc" --version >/dev/null 2>&1; then
-      log "opencode 已存在：$("$oc" --version 2>/dev/null | head -1 || echo '')"
-    else
-      log "安装 @opencode/cli@$OPENCODE_VERSION"
-      "$npm" install "${opts[@]}" "@opencode/cli@$OPENCODE_VERSION" || warn "opencode 安装失败"
-      if [ -x "$oc" ] && "$oc" --version >/dev/null 2>&1; then
-        log "opencode ✓ $("$oc" --version 2>/dev/null | head -1 || echo '')"
-      else
-        warn "opencode 不可用，检查 npm postinstall 是否被禁用、平台包是否可用"
-      fi
-    fi
-  fi
-  "$DEVKIT_ROOT/bin/python3" --version
-}
-
-# ---------------------------- 8. LazyVim -------------------------------------
-track_nvim_dir(){
-  local dir="$1" key="$2"
-  if [ -e "$dir" ]; then state_set_once "$key" 0; else state_set_once "$key" 1; fi
-}
-
-# tree-sitter CLI 本身是 musl 构建，其 cc crate 会按 musl target 默认选 musl-gcc。
-# nvim-treesitter 编译 parser 时继承本脚本的环境，所以必须先切到 glibc 编译器。
-use_glibc_cc_for_nvim(){
-  export CC=/usr/bin/cc CXX=/usr/bin/c++
-  export CC_x86_64_unknown_linux_musl=/usr/bin/cc
-  export CXX_x86_64_unknown_linux_musl=/usr/bin/c++
-  unset CFLAGS CXXFLAGS CFLAGS_x86_64_unknown_linux_musl CXXFLAGS_x86_64_unknown_linux_musl
-}
-
+# ---------------------------- 3.2 LazyVim -----------------------------------
 lazyvim_phase(){
   step "LazyVim"
   local managed=0 do_sync=0
@@ -861,7 +805,7 @@ lazyvim_phase(){
     || warn "Lazy sync 未完成，网络好转后重跑本脚本"
 }
 
-# ---------------------------- 8b. Treesitter parser（glibc） --------------
+# ---------------------------- 3.3 Treesitter parser（glibc） ---------------
 ts_parsers_phase(){
   step "Treesitter parser（glibc）"
   if [ "$UPDATE_TS_PARSERS" != "1" ]; then
@@ -921,7 +865,304 @@ LUA
   [ "$bad" -eq 0 ] || die "parser 的 libc 链接异常，Neovim 无法 dlopen；请检查 CC_x86_64_unknown_linux_musl"
 }
 
-# ---------------------------- 9b. 构建中间产物清理 -------------------------
+# ============================================================================
+# 4. Node.js 与 TS/JS 工具
+# ============================================================================
+# ---------------------------- 4.1 Node.js 22 LTS ---------------------------
+node_phase(){
+  step "Node.js 22 LTS"
+  mkdir -p "$NODE_PREFIX" "$NPM_PREFIX"
+  if [ -x "$NODE_PREFIX/bin/node" ]; then
+    log "node 已存在：$("$NODE_PREFIX/bin/node" --version)"
+  else
+    local arch=x64 ver="" file="" url tmp
+    [ "$(uname -m)" = "aarch64" ] && arch=arm64
+    tmp=$(mktemp)
+    if curl -fsSL --retry 2 --connect-timeout 8 \
+      "https://registry.npmmirror.com/-/binary/node/latest-v22.x/" -o "$tmp"; then
+      file=$(grep -oE "node-v22\.[0-9]+\.[0-9]+-linux-${arch}\.tar\.xz" "$tmp" | sort -uV | tail -1)
+    fi
+    if [ -z "$file" ]; then
+      curl -fsSL --retry 2 "https://nodejs.org/dist/latest-v22.x/" -o "$tmp"
+      file=$(grep -oE "node-v22\.[0-9]+\.[0-9]+-linux-${arch}\.tar\.xz" "$tmp" | head -1)
+    fi
+    rm -f "$tmp"
+    [ -n "$file" ] || die "无法解析 Node 22 版本号"
+    ver="${file#node-v}"; ver="${ver%-linux-${arch}.tar.xz}"
+    url="$NODE_DIST/v${ver}/${file}"
+    log "下载 $url"
+    curl -fSL --retry 3 -o /tmp/devkit-node.tar.xz "$url" \
+      || curl -fSL --retry 3 -o /tmp/devkit-node.tar.xz "https://nodejs.org/dist/v${ver}/${file}"
+    rm -rf /tmp/devkit-node-dir; mkdir -p /tmp/devkit-node-dir
+    tar -xJf /tmp/devkit-node.tar.xz -C /tmp/devkit-node-dir
+    rm -rf "$NODE_PREFIX"; mv "/tmp/devkit-node-dir/node-v${ver}-linux-${arch}" "$NODE_PREFIX"
+    rm -rf /tmp/devkit-node-dir /tmp/devkit-node.tar.xz
+    log "node 安装完成：$("$NODE_PREFIX/bin/node" --version)"
+  fi
+  "$NODE_PREFIX/bin/node" -v
+  "$NODE_PREFIX/bin/npm" --version
+}
+
+# ---------------------------- 4.2 npm 工具（hunk / Trellis / opencode） -----
+npm_tools_phase(){
+  step "hunk / Trellis"
+  mkdir -p "$NPM_PREFIX" "$SHIM_DIR"
+  local npm="$NODE_PREFIX/bin/npm" opts=(--global --prefix "$NPM_PREFIX"
+    --registry "$NPM_REGISTRY" --no-audit --no-fund)
+  export PATH="$NPM_PREFIX/bin:$PATH"
+
+  if ! command -v hunk >/dev/null 2>&1; then
+    log "安装 hunkdiff@$HUNK_VERSION"
+    if ! "$npm" install "${opts[@]}" "hunkdiff@$HUNK_VERSION"; then
+      warn "hunk $HUNK_VERSION 失败，尝试 0.23.0"
+      "$npm" install "${opts[@]}" "hunkdiff@0.23.0" || warn "hunk 安装失败"
+    fi
+  fi
+  if command -v hunk >/dev/null 2>&1; then
+    log "hunk ✓ $(hunk --version 2>/dev/null | head -1 || echo '')"
+  else
+    warn "hunk 不在 PATH，检查 npm 可选平台包是否可用"
+  fi
+
+  if ! command -v trellis >/dev/null 2>&1; then
+    log "安装 @mindfoldhq/trellis@latest"
+    "$npm" install "${opts[@]}" "@mindfoldhq/trellis@latest" || warn "Trellis 安装失败"
+  fi
+  if command -v trellis >/dev/null 2>&1; then
+    log "trellis ✓ $(trellis --version 2>/dev/null | head -1 || echo '')"
+  else
+    warn "trellis 不在 PATH"
+  fi
+
+  if [ "$WITH_OPENCODE" = "1" ]; then
+    local oc="$NPM_PREFIX/bin/opencode"
+    if [ -x "$oc" ] && "$oc" --version >/dev/null 2>&1; then
+      log "opencode 已存在：$("$oc" --version 2>/dev/null | head -1 || echo '')"
+    else
+      log "安装 @opencode/cli@$OPENCODE_VERSION"
+      "$npm" install "${opts[@]}" "@opencode/cli@$OPENCODE_VERSION" || warn "opencode 安装失败"
+      if [ -x "$oc" ] && "$oc" --version >/dev/null 2>&1; then
+        log "opencode ✓ $("$oc" --version 2>/dev/null | head -1 || echo '')"
+      else
+        warn "opencode 不可用，检查 npm postinstall 是否被禁用、平台包是否可用"
+      fi
+    fi
+  fi
+  log "npm 工具就绪（Python venv 与 shim 在下一阶段创建）"
+}
+
+# ============================================================================
+# 5. Python 运行时与工具环境
+# ============================================================================
+# ---------------------------- 5.1 Python 3.12 + 工具 venv ------------------
+ensure_tool_venv(){
+  local name="$1"
+  local py="$2"
+  local venv="$VENV_DIR/$name"
+  if [ -x "$venv/bin/python" ]; then
+    log "$name venv 已存在：$venv"
+    return 0
+  fi
+  log "创建 $name venv：$venv（$("$py" --version)）"
+  "$UV_BIN" venv --python "$py" --seed "$venv" \
+    || return 1
+  [ -x "$venv/bin/python" ] || { warn "$name venv 未生成"; return 1; }
+}
+
+python_env_phase(){
+  step "Python $PYTHON_VERSION + 工具专用 venv"
+  mkdir -p "$UV_PYTHON_INSTALL_DIR" "$UV_PYTHON_BIN_DIR" "$VENV_DIR" "$SHIM_DIR"
+  [ -x "$UV_BIN" ] || die "uv 缺失：请先执行 Rust 工具阶段（$UV_BIN）"
+
+  # 迁移旧布局：不再向 ~/.devkit/bin 暴露 python3/python。
+  rm -f "$DEVKIT_ROOT/bin/python3" "$DEVKIT_ROOT/bin/python"
+
+  if [ -n "$PY_MIRROR" ]; then export UV_PYTHON_INSTALL_MIRROR="$PY_MIRROR"; fi
+  if ! "$UV_BIN" python install "$PYTHON_VERSION"; then
+    warn "uv 镜像下载失败，改试官方源"
+    unset UV_PYTHON_INSTALL_MIRROR
+    "$UV_BIN" python install "$PYTHON_VERSION" || die "Python $PYTHON_VERSION 安装失败"
+  fi
+  local py
+  py=$("$UV_BIN" python find "$PYTHON_VERSION" --managed-python 2>/dev/null \
+       || "$UV_BIN" python find "$PYTHON_VERSION")
+  [ -x "$py" ] || die "找不到 uv 托管的 Python $PYTHON_VERSION"
+  ln -sf "$py" "$UV_PYTHON_BIN_DIR/python3"
+  ln -sf "$py" "$UV_PYTHON_BIN_DIR/python"
+  log "Python $PYTHON_VERSION → $py（$("$py" --version)）"
+
+  ensure_tool_venv trellis "$py" || die "Trellis venv 创建失败"
+  [ "$WITH_OPENCODE" = "1" ] && { ensure_tool_venv opencode "$py" || die "opencode venv 创建失败"; }
+  log "trellis venv python：$("$VENV_DIR/trellis/bin/python" --version)"
+  log "Python 运行时与工具 venv 就绪"
+}
+
+# ---------------------------- 5.2 公共开发工具（uv tool） -------------------
+install_uv_tool(){
+  local pkg="$1" bin="$2" py="$3" exe="$UV_TOOL_BIN_DIR/$2"
+  if [ -x "$exe" ] && "$exe" --version >/dev/null 2>&1; then
+    log "$bin 已存在：$("$exe" --version 2>/dev/null | head -1)"
+    return 0
+  fi
+  log "uv tool install $pkg"
+  "$UV_BIN" tool install --force --python "$py" "$pkg" || return 1
+  [ -x "$exe" ] || { warn "$pkg 未生成 $exe"; return 1; }
+}
+
+python_tools_phase(){
+  step "公共开发工具（basedpyright / ruff）"
+  [ -x "$UV_BIN" ] || die "uv 缺失：请先执行 Rust 工具阶段（$UV_BIN）"
+  local py
+  py=$("$UV_BIN" python find "$PYTHON_VERSION" --managed-python 2>/dev/null \
+       || "$UV_BIN" python find "$PYTHON_VERSION")
+  [ -x "$py" ] || die "找不到 uv 托管的 Python $PYTHON_VERSION"
+  if [ -n "$PYPI_INDEX" ]; then export UV_DEFAULT_INDEX="$PYPI_INDEX"; fi
+  install_uv_tool basedpyright basedpyright "$py" || die "basedpyright 安装失败"
+  install_uv_tool ruff ruff "$py" || die "ruff 安装失败"
+  export PATH="$UV_TOOL_BIN_DIR:$PATH"
+  log "basedpyright：$("$UV_TOOL_BIN_DIR/basedpyright" --version 2>&1 | head -1)"
+  log "ruff：$("$UV_TOOL_BIN_DIR/ruff" --version 2>&1 | head -1)"
+}
+
+# ---------------------------- 5.3 工具专用 shim ----------------------------
+write_tool_shim(){
+  local name="$1" venv="$2" real="$NPM_PREFIX/bin/$1" shim="$SHIM_DIR/$1"
+  [ -e "$real" ] || { warn "$name 未安装，跳过 shim"; return 0; }
+  cat > "$shim" <<EOF
+#!/usr/bin/env bash
+set -euo pipefail
+venv="$VENV_DIR/$venv"
+export VIRTUAL_ENV="\$venv"
+export PATH="\$venv/bin:\$PATH"
+export PYTHONNOUSERSITE=1
+export PIP_REQUIRE_VIRTUALENV=1
+unset PYTHONPATH PYTHONHOME
+exec "$real" "\$@"
+EOF
+  chmod +x "$shim"
+  log "shim：$name → $venv venv"
+}
+
+shims_phase(){
+  step "工具专用 Python shim"
+  mkdir -p "$SHIM_DIR"
+  write_tool_shim trellis trellis
+  [ -e "$NPM_PREFIX/bin/tl" ] && write_tool_shim tl trellis
+  if [ "$WITH_OPENCODE" = "1" ]; then
+    write_tool_shim opencode opencode
+    [ -e "$NPM_PREFIX/bin/opencode2" ] && write_tool_shim opencode2 opencode
+  fi
+  log "工具 shim 就绪：$SHIM_DIR"
+}
+
+# ============================================================================
+# 6. .bashrc 托管块
+# ============================================================================
+bashrc_phase(){
+  step ".bashrc 托管块"
+  local rc="$HOME/.bashrc" created=0
+  if [ ! -f "$rc" ]; then touch "$rc"; created=1; fi
+  state_set_once BASH_RC_CREATED "$created"
+  sed -i '/^# >>> devkit (setup-ubuntu.sh) >>>/,/^# <<< devkit (setup-ubuntu.sh) <<</d' "$rc"
+  cat >> "$rc" <<'EOF'
+# >>> devkit (setup-ubuntu.sh) >>>
+# musl 工具、node/npm、cargo、uv/Python 在宿主机和容器都可用。
+# python-bin 故意不加入 PATH：每个工具通过 shim 使用自己的 venv。
+if [ -d "$HOME/.devkit" ]; then
+  case ":$PATH:" in *":$HOME/.devkit/shims:"*) ;; *)
+    export PATH="$HOME/.devkit/shims:$HOME/.devkit/musl/bin:$HOME/.devkit/node/bin:$HOME/.devkit/npm-global/bin:$HOME/.devkit/uv-tool-bin:$HOME/.devkit/cargo/bin:$PATH" ;;
+  esac
+  export NPM_CONFIG_PREFIX="$HOME/.devkit/npm-global"
+  export NPM_CONFIG_CACHE="$HOME/.devkit/cache/npm"
+  export RUSTUP_HOME="$HOME/.devkit/rustup"
+  export CARGO_HOME="$HOME/.devkit/cargo"
+  export UV_PYTHON_INSTALL_DIR="$HOME/.devkit/uv-python"
+  export UV_PYTHON_BIN_DIR="$HOME/.devkit/python-bin"
+  export UV_PYTHON_INSTALL_BIN=1
+  export UV_CACHE_DIR="$HOME/.devkit/cache/uv"
+  export UV_TOOL_DIR="$HOME/.devkit/uv-tools"
+  export UV_TOOL_BIN_DIR="$HOME/.devkit/uv-tool-bin"
+fi
+# Neovim 使用构建容器的 glibc 基线（20.04→2.31，22.04→2.35）：宿主与共享
+# 同一 home、glibc 不低于该基线的容器都可直接使用；更老的容器不行。
+case ":$PATH:" in *":$HOME/.devkit/nvim/bin:"*) ;; *)
+  [ -d "$HOME/.devkit/nvim/bin" ] && export PATH="$HOME/.devkit/nvim/bin:$PATH" ;;
+esac
+# yazi: 用 y 启动，退出时切换到 Yazi 中最后浏览的目录（官方 Shell wrapper）
+# https://yazi-rs.github.io/docs/quick-start/#shell-wrapper
+function y() {
+  local tmp cwd
+  tmp="$(mktemp -t "yazi-cwd.XXXXXX")" || return
+  command yazi "$@" --cwd-file="$tmp"
+  IFS= read -r -d '' cwd < "$tmp"
+  [ "$cwd" != "$PWD" ] && [ -d "$cwd" ] && builtin cd -- "$cwd" || builtin true
+  command rm -f -- "$tmp"
+}
+# <<< devkit (setup-ubuntu.sh) <<<
+EOF
+  log ".bashrc 已写入托管块（重开 shell 或 source ~/.bashrc）"
+}
+
+# ============================================================================
+# 7. 验收与清理
+# ============================================================================
+# ---------------------------- 7.1 验收 -------------------------------------
+verify_phase(){
+  step "验收"
+  export PATH="$UV_TOOL_BIN_DIR:$SHIM_DIR:$MUSL_BIN:$NVIM_PREFIX/bin:$NODE_PREFIX/bin:$NPM_PREFIX/bin:$CARGO_HOME/bin:$PATH"
+  local bin p v static_ok=0 static_bad=0 other_bad=0
+  printf '\n%-10s %-8s %-52s %s\n' 工具 类型 路径 版本
+  for bin in keifu yazi ya gitui sk ducker eza bat rg fd btm zoxide uv uvx; do
+    p=$(command -v "$bin" 2>/dev/null || true)
+    if [ -n "$p" ]; then
+      v=$("$p" --version 2>/dev/null | head -1 || echo '?')
+      if is_static "$p"; then
+        printf '\033[32m%-10s %-8s %-52s %s\033[0m\n' "$bin" static "$p" "$v"; static_ok=$((static_ok+1))
+      else
+        printf '\033[31m%-10s %-8s %-52s %s\033[0m\n' "$bin" 动态 "$p" "$v"; static_bad=$((static_bad+1))
+      fi
+    else
+      printf '\033[31m%-10s %-8s %-52s %s\033[0m\n' "$bin" 缺失 - -
+      static_bad=$((static_bad+1))
+    fi
+  done
+  local other_bins="node npm hunk trellis basedpyright ruff"
+  if [ "$WITH_OPENCODE" = "1" ]; then
+    if [ -x "$SHIM_DIR/opencode" ]; then other_bins="$SHIM_DIR/opencode $other_bins"
+    else other_bins="$NPM_PREFIX/bin/opencode $other_bins"; fi
+  fi
+  other_bins="nvim $other_bins"
+  for bin in $other_bins; do
+    p=$(command -v "$bin" 2>/dev/null || true)
+    if [ -n "$p" ]; then
+      v=$("$p" --version 2>/dev/null | head -1 || echo '?')
+      printf '\033[32m%-10s %-8s %-52s %s\033[0m\n' "$bin" glibc "$p" "$v"
+    else
+      printf '\033[33m%-10s %-8s %-52s %s\033[0m\n' "$bin" 缺失 - -
+      other_bad=$((other_bad+1))
+    fi
+  done
+  local pyp="$UV_PYTHON_BIN_DIR/python3"
+  if [ -x "$pyp" ]; then
+    printf '\033[32m%-10s %-8s %-52s %s\033[0m\n' python3 devkit "$pyp" "$("$pyp" --version 2>&1 | head -1)"
+  else
+    printf '\033[33m%-10s %-8s %-52s %s\033[0m\n' python3 缺失 - -
+    other_bad=$((other_bad+1))
+  fi
+  local plugins=0
+  if [ -d "$HOME/.local/share/nvim/lazy" ]; then
+    plugins=$(find "$HOME/.local/share/nvim/lazy" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | wc -l)
+  fi
+  printf 'LazyVim 插件：%d 个（%s）\n' "$plugins" "$HOME/.local/share/nvim/lazy"
+  [ "$plugins" -eq 0 ] && warn "LazyVim 插件尚未同步（网络恢复后重跑即可续传）"
+  printf '\n制品根目录：%s\n' "$DEVKIT_ROOT"
+  printf 'Rust 静态工具：%d 通过，%d 异常；其他工具缺失：%d\n' "$static_ok" "$static_bad" "$other_bad"
+  if [ "$static_bad" -ne 0 ] || [ "$other_bad" -ne 0 ]; then
+    die "验收未通过（见上表）"
+  fi
+}
+
+# ---------------------------- 7.2 构建中间产物清理 -------------------------
 # 成功验收后删除只用于构建的目录；运行时产物都在 musl/bin、nvim、node 等。
 cleanup_build_artifacts_phase(){
   step "清理构建中间产物"
@@ -940,114 +1181,6 @@ cleanup_build_artifacts_phase(){
   fi
 }
 
-# ---------------------------- 9. .bashrc 托管块 -----------------------------
-bashrc_phase(){
-  step ".bashrc 托管块"
-  local rc="$HOME/.bashrc" created=0
-  if [ ! -f "$rc" ]; then touch "$rc"; created=1; fi
-  state_set_once BASH_RC_CREATED "$created"
-  sed -i '/^# >>> devkit (setup-ubuntu.sh) >>>/,/^# <<< devkit (setup-ubuntu.sh) <<</d' "$rc"
-  cat >> "$rc" <<'EOF'
-# >>> devkit (setup-ubuntu.sh) >>>
-# musl 工具、node/npm、cargo、uv/Python 在宿主机和容器都可用。
-if [ -d "$HOME/.devkit" ]; then
-  case ":$PATH:" in *":$HOME/.devkit/musl/bin:"*) ;; *)
-    export PATH="$HOME/.devkit/bin:$HOME/.devkit/node/bin:$HOME/.devkit/npm-global/bin:$HOME/.devkit/musl/bin:$HOME/.devkit/cargo/bin:$PATH" ;;
-  esac
-  export NPM_CONFIG_PREFIX="$HOME/.devkit/npm-global"
-  export NPM_CONFIG_CACHE="$HOME/.devkit/cache/npm"
-  export RUSTUP_HOME="$HOME/.devkit/rustup"
-  export CARGO_HOME="$HOME/.devkit/cargo"
-  export UV_PYTHON_INSTALL_DIR="$HOME/.devkit/uv-python"
-  export UV_CACHE_DIR="$HOME/.devkit/cache/uv"
-fi
-# Neovim 使用构建容器的 glibc 基线（20.04→2.31，22.04→2.35）：宿主与共享
-# 同一 home、glibc 不低于该基线的容器都可直接使用；更老的容器不行。
-case ":$PATH:" in *":$HOME/.devkit/nvim/bin:"*) ;; *)
-  [ -d "$HOME/.devkit/nvim/bin" ] && export PATH="$HOME/.devkit/nvim/bin:$PATH" ;;
-esac
-# yazi: 退出时回到最后一次浏览目录
-yazi() {
-  local tmp cwd
-  tmp=$(mktemp -t yazi-cwd.XXXXXX) || return
-  command yazi "$@" --cwd-file="$tmp"
-  cwd=$(cat -- "$tmp" 2>/dev/null)
-  [ -n "$cwd" ] && [ "$cwd" != "$PWD" ] && builtin cd -- "$cwd"
-  rm -f -- "$tmp"
-}
-# <<< devkit (setup-ubuntu.sh) <<<
-EOF
-  log ".bashrc 已写入托管块（重开 shell 或 source ~/.bashrc）"
-}
-
-# ---------------------------- 10. 验收 --------------------------------------
-verify_phase(){
-  step "验收"
-  export PATH="$MUSL_BIN:$DEVKIT_ROOT/bin:$NVIM_PREFIX/bin:$NODE_PREFIX/bin:$NPM_PREFIX/bin:$CARGO_HOME/bin:$PATH"
-  if [ "$NVIM_ONLY" = "1" ]; then
-    local p v bad=0 plugins=0
-    printf '\n%-10s %-8s %-52s %s\n' 项目 类型 路径 版本
-    p=$(command -v nvim 2>/dev/null || true)
-    if [ -n "$p" ]; then
-      v=$("$p" --version 2>/dev/null | head -1 || echo '?')
-      printf '\033[32m%-10s %-8s %-52s %s\033[0m\n' nvim glibc "$p" "$v"
-    else
-      printf '\033[31m%-10s %-8s %-52s %s\033[0m\n' nvim 缺失 - -
-      bad=1
-    fi
-    if [ -f "$NVIM_CONFIG/.devkit-managed" ]; then
-      printf '\033[32m%-10s %-8s %-52s %s\033[0m\n' LazyVim 配置 "$NVIM_CONFIG" managed
-    else
-      printf '\033[31m%-10s %-8s %-52s %s\033[0m\n' LazyVim 缺失 "$NVIM_CONFIG" -
-      bad=1
-    fi
-    if [ -d "$HOME/.local/share/nvim/lazy" ]; then
-      plugins=$(find "$HOME/.local/share/nvim/lazy" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | wc -l)
-    fi
-    printf 'LazyVim 插件目录：%d 个（%s）\n' "$plugins" "$HOME/.local/share/nvim/lazy"
-    [ "$plugins" -eq 0 ] && warn "LazyVim 插件尚未同步（网络恢复后重跑本脚本即可续传）"
-    printf '\n制品根目录：%s\n' "$DEVKIT_ROOT"
-    [ "$bad" -eq 0 ] || die "nvim/LazyVim 验收未通过（见上表）"
-    return 0
-  fi
-  local bin p v static_ok=0 static_bad=0 other_bad=0
-  printf '\n%-10s %-8s %-52s %s\n' 工具 类型 路径 版本
-  for bin in keifu yazi ya gitui sk ducker eza bat rg fd btm zoxide; do
-    p=$(command -v "$bin" 2>/dev/null || true)
-    if [ -n "$p" ]; then
-      v=$("$p" --version 2>/dev/null | head -1 || echo '?')
-      if is_static "$p"; then
-        printf '\033[32m%-10s %-8s %-52s %s\033[0m\n' "$bin" static "$p" "$v"; static_ok=$((static_ok+1))
-      else
-        printf '\033[31m%-10s %-8s %-52s %s\033[0m\n' "$bin" 动态 "$p" "$v"; static_bad=$((static_bad+1))
-      fi
-    else
-      printf '\033[31m%-10s %-8s %-52s %s\033[0m\n' "$bin" 缺失 - -
-      static_bad=$((static_bad+1))
-    fi
-  done
-  if [ "$RUST_ONLY" != "1" ]; then
-    local other_bins="node npm hunk trellis uv python3"
-    [ "$WITH_OPENCODE" = "1" ] && other_bins="$NPM_PREFIX/bin/opencode $other_bins"
-    [ "$NPM_ONLY" != "1" ] && other_bins="nvim $other_bins"
-    for bin in $other_bins; do
-      p=$(command -v "$bin" 2>/dev/null || true)
-      if [ -n "$p" ]; then
-        v=$("$p" --version 2>/dev/null | head -1 || echo '?')
-        printf '\033[32m%-10s %-8s %-52s %s\033[0m\n' "$bin" glibc "$p" "$v"
-      else
-        printf '\033[33m%-10s %-8s %-52s %s\033[0m\n' "$bin" 缺失 - -
-        other_bad=$((other_bad+1))
-      fi
-    done
-  fi
-  printf '\n制品根目录：%s\n' "$DEVKIT_ROOT"
-  printf 'Rust 静态工具：%d 通过，%d 异常；其他工具缺失：%d\n' "$static_ok" "$static_bad" "$other_bad"
-  if [ "$static_bad" -ne 0 ] || [ "$other_bad" -ne 0 ]; then
-    die "验收未通过（见上表）"
-  fi
-}
-
 # --------------------------------- main -------------------------------------
 main(){
   preflight
@@ -1056,48 +1189,27 @@ main(){
     log "APT_ONLY=1：系统依赖已就绪，退出。请用普通用户执行完整脚本（SKIP_APT=1）"
     exit 0
   fi
-  if [ "$NVIM_ONLY" = "1" ]; then
-    # 只补 nvim/LazyVim：Rust/Node/uv/npm 应已安装并验证过
-    ts_cli_phase
-    nvim_phase
-    bashrc_phase
-    lazyvim_phase
-    ts_parsers_phase
-  else
-    rust_phase
-    rust_tools_phase
-    step "yazi / ya"
-    install_yazi || die "yazi/ya 安装失败"
-    # 先写 .bashrc：即使后面的 nvim / LazyVim 因 GitHub 网络失败，
-    # musl 工具（含 yazi）在宿主机和新开的容器里也已经可用。
-    bashrc_phase
-    if [ "$RUST_ONLY" != "1" ]; then
-      [ "$NPM_ONLY" != "1" ] && ts_cli_phase
-      [ "$NPM_ONLY" != "1" ] && nvim_phase
-      node_phase
-      uv_phase
-      npm_tools_phase
-      [ "$NPM_ONLY" != "1" ] && lazyvim_phase
-      [ "$NPM_ONLY" != "1" ] && ts_parsers_phase
-    fi
-  fi
+  # 章节顺序：Rust → Neovim → TS/JS → Python
+  rust_phase
+  rust_tools_phase
+  step "yazi / ya"
+  install_yazi || die "yazi/ya 安装失败"
+  ts_cli_phase
+  # 先写 .bashrc：后面 nvim/LazyVim 即使网络失败，musl 工具也已可用。
+  bashrc_phase
+  nvim_phase
+  lazyvim_phase
+  ts_parsers_phase
+  node_phase
+  npm_tools_phase
+  python_env_phase
+  python_tools_phase
+  shims_phase
   state_set DEVKIT_ROOT "$DEVKIT_ROOT"
   state_set SETUP_AT "$(date -Is)"
-  state_set RUST_ONLY "$RUST_ONLY"
-  state_set NPM_ONLY "$NPM_ONLY"
-  state_set NVIM_ONLY "$NVIM_ONLY"
   verify_phase
   cleanup_build_artifacts_phase
-  if [ "$NVIM_ONLY" = "1" ]; then
-    log "Neovim/LazyVim 安装完成（NVIM_ONLY=1）"
-  elif [ "$RUST_ONLY" = "1" ]; then
-    log "Rust 工具安装完成（RUST_ONLY=1，已跳过 nvim/node/npm/LazyVim）"
-  elif [ "$NPM_ONLY" = "1" ]; then
-    log "npm 工具安装完成（NPM_ONLY=1，已跳过 nvim/LazyVim）"
-  else
-    log "全部完成。清理请运行：bash devkit-cleanup.sh"
-  fi
+  log "全部完成。清理请运行：bash devkit-cleanup.sh"
 }
 
 if [ "${BASH_SOURCE[0]}" = "$0" ]; then main "$@"; fi
-

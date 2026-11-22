@@ -5,9 +5,7 @@
 # ----------------------------------------------------------------------------
 # 用法：
 #   ./devkit-up.sh            启动容器并进入普通用户 shell
-#   ./devkit-up.sh --rust     以 root 装 apt 依赖，再以普通用户只装 Rust 工具
 #   ./devkit-up.sh --setup    以 root 装 apt 依赖，再以同名普通用户装全部工具
-#   ./devkit-up.sh --nvim     以 root 装 apt 依赖，再以普通用户只装 Neovim/LazyVim
 #   ./devkit-up.sh --apt      只以 root 装 apt 依赖，然后进入普通用户 shell
 #
 # 环境变量（都会透传给容器内 setup）：
@@ -16,8 +14,9 @@
 #   SKIP_APT=1                    镜像已预装系统依赖时，跳过 root 的 apt 阶段
 #   RUSTUP_DIST_SERVER / RUSTUP_UPDATE_ROOT / RUSTUP_INIT_URL
 #   CARGO_REGISTRY / NPM_REGISTRY / NODE_DIST / GH_MIRRORS
-#   PY_MIRROR / OPENSSL_TARBALL
+#   PY_MIRROR / PYPI_INDEX / OPENSSL_TARBALL
 #   WITH_OPENCODE / OPENCODE_VERSION / HUNK_VERSION / YAZI_VERSION
+#   UV_VERSION / PYTHON_VERSION
 #   DEVKIT_ROOT / UPDATE_TS_PARSERS / TS_CLI_VERSION
 #   FORCE_NVIM / FORCE_TS_CLI / FORCE_RUST_TOOLS / FORCE_LAZYVIM
 #
@@ -41,8 +40,8 @@ MODE="${1:-shell}"
 ENV_FILE=/tmp/devkit-up.env
 ENV_KEYS=(MIRROR APT_MIRROR SKIP_APT RUSTUP_DIST_SERVER RUSTUP_UPDATE_ROOT
   RUSTUP_INIT_URL CARGO_REGISTRY NPM_REGISTRY NODE_DIST GH_MIRRORS
-  OPENSSL_TARBALL PY_MIRROR WITH_OPENCODE OPENCODE_VERSION HUNK_VERSION
-  YAZI_VERSION DEVKIT_ROOT UPDATE_TS_PARSERS TS_CLI_VERSION FORCE_NVIM
+  OPENSSL_TARBALL PY_MIRROR PYPI_INDEX WITH_OPENCODE OPENCODE_VERSION HUNK_VERSION
+  YAZI_VERSION UV_VERSION PYTHON_VERSION DEVKIT_ROOT UPDATE_TS_PARSERS TS_CLI_VERSION FORCE_NVIM
   FORCE_TS_CLI FORCE_RUST_TOOLS FORCE_LAZYVIM)
 
 env_file_contents(){
@@ -56,9 +55,9 @@ env_file_contents(){
 }
 
 case "$MODE" in
-  shell|--setup|--apt|--rust|--nvim) ;;
-  -h|--help) sed -n '2,26p' "$0"; exit 0 ;;
-  *) echo "未知参数：$MODE（可用 --rust / --nvim / --setup / --apt）" >&2; exit 2 ;;
+  shell|--setup|--apt) ;;
+  -h|--help) sed -n '2,28p' "$0"; exit 0 ;;
+  *) echo "未知参数：$MODE（可用 --setup / --apt）" >&2; exit 2 ;;
 esac
 
 [ -f "$SETUP" ] || { echo "找不到 $SETUP" >&2; exit 1; }
@@ -114,21 +113,17 @@ env_file_contents | docker exec -i -u 0 "$CONTAINER" /bin/bash -c "
 "
 
 # 4) root：只装系统依赖（curl / git / 编译工具 / musl 等）
-if [ "$MODE" = "--setup" ] || [ "$MODE" = "--apt" ] || [ "$MODE" = "--rust" ] \
-   || [ "$MODE" = "--nvim" ]; then
+if [ "$MODE" = "--setup" ] || [ "$MODE" = "--apt" ]; then
   echo "[1/2] root 安装系统依赖 ..."
   docker exec -u 0 "$CONTAINER" /bin/bash -c \
     "set -a; . $ENV_FILE; set +a; APT_ONLY=1 bash '$SETUP'"
 fi
 
 # 5) 普通用户：装所有 home 内的开发工具
-if [ "$MODE" = "--setup" ] || [ "$MODE" = "--rust" ] || [ "$MODE" = "--nvim" ]; then
+if [ "$MODE" = "--setup" ]; then
   echo "[2/2] 普通用户 $HOST_USER 安装开发工具 ..."
-  EXTRA=""
-  [ "$MODE" = "--rust" ] && EXTRA="RUST_ONLY=1"
-  [ "$MODE" = "--nvim" ] && EXTRA="NVIM_ONLY=1"
   docker exec -u 0 "$CONTAINER" /bin/bash -c \
-    "su - '$HOST_USER' -c 'set -a; . $ENV_FILE; set +a; $EXTRA SKIP_APT=1 bash $SETUP'"
+    "su - '$HOST_USER' -c 'set -a; . $ENV_FILE; set +a; SKIP_APT=1 bash $SETUP'"
 fi
 
 echo
