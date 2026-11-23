@@ -1,6 +1,16 @@
 # 交接说明：当前状态与下一步（Neovim / LazyVim）
 
-> 最后更新：2026-11-20（uv 归入 Rust 阶段；Python 3.12 改为工具私有 venv）
+> 最后更新：2026-11-23（脚本按章节重排；新增 basedpyright/ruff；镜像自动回退）
+>
+> 2026-11-23 验证：清空 `~/.devkit` 后在 ubuntu:20.04 容器内完整安装通过
+> （退出码 0）：Rust 静态工具 14/14，nvim v0.12.6，LazyVim 插件 32 个，
+> node v22.23.5，hunk 0.24.0，trellis 0.6.17，opencode v2.3.2，
+> basedpyright 1.40.2，ruff 0.17.6，Python 3.12.16；宿主机交互 shell 可用。
+> 二次运行全程跳过（11 秒，退出码 0），幂等验证通过。
+> 未覆盖：`UPDATE_TS_PARSERS=1` 的 parser 强制重编路径（LazyVim 已生成 24 个
+> glibc parser）；公司网络下国内镜像不可达属环境问题，脚本已自动回退官方源。
+>
+> 2026-11-20 变更：uv 归入 Rust 阶段；Python 3.12 改为工具私有 venv
 >
 > 2026-11-20 变更：`uv`/`uvx` 作为 musl 静态 Rust 工具装到 `~/.devkit/musl/bin`；
 > uv 托管的 Python 3.12 只装一份，Trellis 与 opencode 各自使用

@@ -132,10 +132,32 @@ SKIP_APT=1 bash /home/$USER/work/project/devkit/setup-ubuntu.sh
 > 制品，避免把 `~/.devkit` 里文件的属主写成 root。安装脚本本身只允许在容器内
 > 运行；宿主机只负责 `docker run` / `devkit-up.sh`。
 
-安装脚本按章节从上到下执行：预检/apt → Rust → Neovim → Node/TS-JS → Python
-→ `.bashrc` → 验收/清理。重跑是幂等的，已装好的工具会自动跳过。
+安装脚本按章节从上到下执行：
+预检/apt → Rust → Neovim → Node/TS-JS → Python → `.bashrc` → 验收/清理。
+重跑是幂等的，已装好的工具会自动跳过。
 
 ## 安装内容
+
+### 章节与工具对照
+
+| 章节 | 子节 | 安装内容 |
+|---|---|---|
+| 1. 预检与系统依赖 | 1.1 | root 用 apt 装构建依赖（curl/git/build-essential/cmake/ninja/gettext/musl-tools/libclang-dev/libncurses-dev/libssl-dev 等），含国内源探测与回退 |
+| 2. Rust 工具链与 CLI | 2.1 | rustup + stable + `x86_64-unknown-linux-musl`，写 cargo 镜像与 crt-static 配置 |
+| | 2.2 | `keifu` `gitui` `sk` `ducker` `eza` `bat` `rg` `fd` `btm` `zoxide` `uv`/`uvx` |
+| | 2.3 | `yazi` / `ya`（GitHub musl 预编译包优先，失败源码编译） |
+| | 2.4 | `tree-sitter` CLI（musl 静态 + wrapper，供 Neovim 编译 parser） |
+| 3. Neovim / LazyVim / Treesitter | 3.1 | Neovim 最新 tag 源码编译 → `~/.devkit/nvim` |
+| | 3.2 | LazyVim starter → `~/.config/nvim`，headless `Lazy! sync` 装插件（nvim-treesitter 随后会按其清单从 GitHub 拉语法并编译基础 parser） |
+| | 3.3 | `UPDATE_TS_PARSERS=1` 时按 LazyVim 列表更新 Treesitter parser 并强制 glibc 编译 |
+| 4. Node.js 与 TS/JS 工具 | 4.1 | Node.js 22 LTS → `~/.devkit/node` |
+| | 4.2 | `hunk`(hunkdiff)、`trellis`、`opencode` → `~/.devkit/npm-global` |
+| 5. Python 运行时与工具环境 | 5.1 | uv 托管 Python 3.12 + trellis/opencode 独立 venv |
+| | 5.2 | `basedpyright`、`ruff`（`uv tool`, 落 `~/.devkit/uv-tool-bin`） |
+| | 5.3 | trellis/opencode 的 venv 注入 shim |
+| 6. `.bashrc` 托管块 | 6.1 | PATH 与环境变量（shims、musl/bin、node、npm-global、uv-tool-bin、cargo、nvim），`y()` 包装函数 |
+| 7. 验收与清理 | 7.1 | 验收表：版本 + 静态链接校验 |
+| | 7.2 | 删除构建中间产物（neovim `.deps`/`build`、ts-cli、openssl-musl） |
 
 ### Rust 工具（全部 musl 静态）
 
