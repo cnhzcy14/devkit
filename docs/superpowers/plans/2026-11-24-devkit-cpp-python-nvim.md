@@ -494,15 +494,15 @@ Expected: 退出码 0；无重新编译 nvim/git/Rust 工具；耗时显著短�
 Run（宿主机）：
 
 ```bash
-docker exec -u 0 ye_cheng_0d2bf85e bash -c "su - ye_cheng -c '
-  source ~/.bashrc >/dev/null 2>&1
+docker exec -u 0 ye_cheng_0d2bf85e bash -c "su - ye_cheng -c 'bash -ic \"
   shuck --version; stylua --version; neocmakelsp --version
   lua-language-server --version; clangd --version | head -1
   git --version; test -x ~/.devkit/git/libexec/git-core/git-remote-https && echo HTTPS-OK
-  nvim --headless +qa && echo NVIM-OK'"
+  nvim --headless +qa && echo NVIM-OK\"'"
 ```
 
 Expected: 全部有版本输出、`HTTPS-OK`、`NVIM-OK`，退出码 0。
+（必须用 `bash -ic`：非交互 shell 不会执行 `.bashrc` 里的托管 PATH。）
 
 - [ ] **Step 6: Commit**
 

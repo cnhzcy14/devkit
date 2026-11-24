@@ -1,6 +1,22 @@
 # 交接说明：当前状态与下一步（Neovim / LazyVim）
 
-> 最后更新：2026-11-23（脚本按章节重排；新增 basedpyright/ruff；镜像自动回退）
+> 最后更新：2026-11-24（新增 C/C++ 与编辑器工具链；LazyVim 自动关闭 Mason）
+>
+> 2026-11-24 验证：ubuntu:20.04 容器 `ye_cheng_0d2bf85e`（用户 `ye_cheng`）完整安装
+> 通过（退出码 0）：
+> - C/C++：`clangd 22.1.6`（LSP + 内置 clang-format/clang-tidy；`clang/bin` 仅此一个），
+>   静态 `git 2.56.1`（自编精简 libcurl 8.17.0 + 系统 OpenSSL，含 `git-remote-https`，
+>   实跑 `git clone https://github.com/git/git.git` 成功）；
+> - 编辑器：`shuck 0.2.11` / `stylua 2.6.0` / `neocmakelsp 0.12.0` 均 musl 静态；
+>   `lua-language-server 3.19.2`（官方 glibc 包）可运行；
+> - Rust 静态工具 17/17 通过，其他工具缺失 0；
+> - LazyVim 托管配置：`spec.plugins["mason.nvim"] == nil`，
+>   `vim.g.lazyvim_python_lsp = "basedpyright"`，clangd/cmake/python extras 生效，
+>   `cpp/cmake/ninja/rst` parser 全部安装；
+> - 幂等重跑约 7 秒，退出码 0。
+> 已知：curl 8.18+ 强制 OpenSSL >= 3.0，20.04/22.04 的 1.1.1 宿主由脚本自动封顶到
+> 8.17.0；LazyVim starter 可能提示 “Please update your config for LazyVim”
+> （上游模板滞后，非阻塞）。
 >
 > 2026-11-23 验证：清空 `~/.devkit` 后在 ubuntu:20.04 容器内完整安装通过
 > （退出码 0）：Rust 静态工具 14/14，nvim v0.12.6，LazyVim 插件 32 个，
@@ -27,10 +43,11 @@
 ## 仓库
 
 - devkit 仓：`/home/ye_cheng/work/project/devkit`
-- 当前提交：`e8e68d3 feat(devkit): :sparkles: add NVIM_ONLY mode and tree-sitter CLI`
-- 该提交已推送（`main` 与 `origin/main` 一致），工作区无未提交改动
-- 该提交内容：`NVIM_ONLY`/`UPDATE_TS_PARSERS` 支持、`devkit-up.sh --nvim`、
-  uv musl 静态、tree-sitter CLI 静态 + wrapper、相关文档更新
+- 当前提交：以 `git log -1` 为准（2026-11-24 系列更新之后）
+- 2026-11-24 系列提交内容：C/C++ 章节（只装 clangd + 静态 git）、
+  shuck/stylua/neocmakelsp/lua-language-server、LazyVim 托管配置（自动关 Mason）、
+  文档与交接更新
+- 是否已推送以 `git status -sb` 为准
 - 文件：
   - `setup-ubuntu.sh`
   - `devkit-up.sh`
@@ -63,6 +80,10 @@ rg 15.2.0
 fd 10.5.2
 btm 0.15.0
 zoxide 0.10.0
+sk 5.9.0
+shuck 0.2.11
+stylua 2.6.0
+uv / uvx 0.13.9
 ```
 
 宿主机和容器交互 shell 均已实测可用（`yazi --version`、`rg --version` 等）。
@@ -71,6 +92,23 @@ zoxide 0.10.0
 2026-11-18 起脚本新增 `skim`；`cargo install skim` 产出的命令是 `sk`，
 已加入 `RUST_TOOLS` 和验收清单。重跑完整安装后会出现下
 `~/.devkit/musl/bin/sk`。`gitui` 与 `sk` 分别替代 lazygit、fzf。
+
+### C/C++ 与编辑器工具（2026-11-24 实装）
+
+```text
+clangd              22.1.6   ~/.devkit/clang/bin（仅此一个文件）
+git                 2.56.1   ~/.devkit/git/bin（静态，含 git-remote-https）
+neocmakelsp         0.12.0   ~/.devkit/musl/bin（musl 静态）
+lua-language-server 3.19.2   ~/.devkit/lua-ls/bin（官方 glibc 包）
+```
+
+- clangd 同时提供 LSP、内置 clang-format 格式化与 `--clang-tidy` 诊断；未安装独立的
+  `clang-format` / `clang-tidy`（旧版遗留文件会在重跑时自动清理）。
+- 静态 git 由源码编译，内置精简静态 libcurl（仅 HTTPS）与静态 OpenSSL；
+  实跑 `git clone https://github.com/git/git.git` 成功。
+- 静态 libcurl 版本按宿主 OpenSSL 自动选择：curl 8.18+ 要求 OpenSSL 3.0，
+  20.04/22.04 的 1.1.1 宿主封顶 `8.17.0`（`CURL_VERSION` 可覆盖）。
+- `lua-language-server` 是 glibc 二进制（最高符号 GLIBC_2.17），只做运行验收。
 
 ### Node / npm 工具
 
@@ -111,6 +149,15 @@ nvim        NVIM v0.12.6（最新 tag 源码编译，Release，glibc 2.31 基线
 - 依赖预播种 19 个就位；1 个未成由 cmake 自行下载，不影响构建
 - 产物是 glibc 动态链接（非 musl），符合设计
 
+2026-11-24 起托管配置会自动写入 `lua/plugins/devkit.lua`：
+
+- 禁用 `mason.nvim` / `mason-lspconfig.nvim`（两种 org 名），
+  `spec.plugins["mason.nvim"] == nil`；
+- 导入 `lang.clangd` / `lang.cmake` / `lang.python` extras；
+- Shell formatter 改为 `shuck`，Lua 仍用 `stylua`；
+- `lua/config/options.lua` 写入 `vim.g.lazyvim_python_lsp = "basedpyright"`；
+- Lazy sync 后补装 `cpp/cmake/ninja/rst` parser（实测 4/4 安装成功）。
+
 ### uv / tree-sitter / parser（2026-11-11 补齐）
 
 ```text
@@ -140,12 +187,13 @@ parser      35 个，~/.local/share/nvim/site/parser
 - 旧 XDG 数据（`~/.local/share/nvim/site`、`mason`）来自之前 `~/neovim` 安装；
   用户已改为共享 home 策略，保留现有数据和 parser。
 
-## 当前运行容器
+## 当前验证容器
 
 ```text
-容器名：ye_cheng_9f9c7b7b
-镜像：ye_cheng/cnngen:261004-dev（Ubuntu 22.04.3）
-状态：Up 3 days（截至 2026-11-18）
+容器名：ye_cheng_0d2bf85e
+镜像：ubuntu:20.04
+用户：ye_cheng（root 只运行 APT_ONLY=1）
+验证：2026-11-24 完整安装 + 幂等重跑均退出码 0
 ```
 
 > 旧容器 `ye_cheng_d3a5c06b`（ubuntu:20.04）已不存在，其 `~/.devkit` 安装也
@@ -155,10 +203,10 @@ parser      35 个，~/.local/share/nvim/site/parser
 
 ```bash
 # root
-docker exec -it ye_cheng_9f9c7b7b /bin/bash
+docker exec -it <容器名> /bin/bash
 
 # 普通用户
-docker exec -it ye_cheng_9f9c7b7b /bin/bash -c "su - ye_cheng"
+docker exec -it <容器名> /bin/bash -c "su - ye_cheng"
 ```
 
 ## 脚本当前能力
@@ -283,7 +331,7 @@ docker exec ye_cheng_d3a5c06b /bin/bash -c \
   `~/.config/nvim`（有 `.devkit-managed` 标记时）。
 - 清理：
   ```bash
-  docker exec -it ye_cheng_9f9c7b7b /bin/bash -c \
+  docker exec -it <容器名> /bin/bash -c \
     "su - ye_cheng -c 'bash /home/ye_cheng/work/project/devkit/devkit-cleanup.sh'"
   ```
 - 清理会删除 `~/.devkit`、`.bashrc` 托管块，并按记录处理 nvim 配置和 uv 文件。
@@ -293,10 +341,10 @@ docker exec ye_cheng_d3a5c06b /bin/bash -c \
 可以直接把下面这段发给新会话：
 
 > 项目在 `/home/ye_cheng/work/project/devkit`，先读 `docs/HANDOFF.md`、
-> `setup-ubuntu.sh`、`docs/使用方法.md`。Rust 工具清单已改为 gitui + skim（`sk`），
-> 不装 lazygit/fzf；npm 侧默认安装 opencode（`@opencode/cli`）。2026-11-18
-> 核对的这台公司服务器上 `~/.devkit` 尚不存在，
-> 历史安装记录仅作参考，需重跑 setup 验证。当前容器 `ye_cheng_9f9c7b7b`，
-> 宿主是 Ubuntu 24.04。安装脚本只能在 Ubuntu 容器内运行，宿主机用
-> `devkit-up.sh` 启动容器。可选下一步：在容器内执行完整安装，
-> 重点验证 `sk` 的静态链接与 `opencode --version`。
+> `setup-ubuntu.sh`、`docs/使用方法.md`。Rust 工具优先、全部 musl 静态；
+> 不装 Go 工具链（skim 替代 fzf、gitui 替代 lazygit、shuck 替代 shfmt）。
+> C/C++ 只装 clangd（内置格式化/诊断）并自编静态 git；Neovim 使用托管
+> LazyVim 配置，自动关闭 Mason。2026-11-24 已在 ubuntu:20.04 容器
+> `ye_cheng_0d2bf85e` 完整安装并幂等复跑通过。安装脚本只能在 Ubuntu 容器内
+> 运行，宿主机用 `devkit-up.sh` 启动容器。可选下一步：在真实开发容器里重跑
+> 一次并验证 clangd/LazyVim 交互体验。
