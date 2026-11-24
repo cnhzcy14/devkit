@@ -1,7 +1,15 @@
 # 共享 home 开发工具母机（Ubuntu 20.04 / 22.04）
 
+**设计原则**
+
+1. **优先使用 Rust 实现的工具，不安装 Go 工具链。** 需要 Go 工具时用 Rust 等价物
+   替代：`fzf → skim（sk）`、`lazygit → gitui`、`shfmt → shuck`。
+2. **所有 Rust 工具一律静态链接 musl。** 统一用 `x86_64-unknown-linux-musl` 编译
+   （现代 Rust 默认 static-PIE，`readelf -l` 无 `INTERP`），不依赖宿主机 glibc；
+   共享 home 挂到任何 glibc 容器都能直接运行。
+
 用官方 `ubuntu:20.04` 或 `ubuntu:22.04` 容器作为“母机”，把通用开发工具装进共享
-home，之后任何挂载同一 home 的开发容器都能直接使用。`setup-ubuntu.sh` 必须在
+home，之后任何挂载同一 home 的开发容器都能直接使用，并且能保证不污染开发容器环境。`setup-ubuntu.sh` 必须在
 Ubuntu 容器内运行；宿主机只负责启动容器，不直接运行安装脚本。
 
 ## 文件
@@ -19,6 +27,8 @@ Ubuntu 容器内运行；宿主机只负责启动容器，不直接运行安装�
 ```text
 ~/.devkit/
 ├── musl/bin/       musl 静态 Rust 工具（含 uv/uvx）+ tree-sitter CLI/wrapper
+├── clang/bin/      clangd（glibc 2.18+）/ clang-format、clang-tidy（全静态）
+├── git/bin/        静态编译的 git（自带 HTTPS），优先于系统 git
 ├── python-bin/     uv 安装的 Python 3.12 可执行文件（不加入全局 PATH）
 ├── venvs/          Trellis/opencode 各自的 Python venv
 ├── shims/          只为工具进程注入私有 PATH 的 trellis/tl/opencode shim
@@ -147,17 +157,19 @@ SKIP_APT=1 bash /home/$USER/work/project/devkit/setup-ubuntu.sh
 | | 2.2 | `keifu` `gitui` `sk` `ducker` `eza` `bat` `rg` `fd` `btm` `zoxide` `uv`/`uvx` |
 | | 2.3 | `yazi` / `ya`（GitHub musl 预编译包优先，失败源码编译） |
 | | 2.4 | `tree-sitter` CLI（musl 静态 + wrapper，供 Neovim 编译 parser） |
-| 3. Neovim / LazyVim / Treesitter | 3.1 | Neovim 最新 tag 源码编译 → `~/.devkit/nvim` |
-| | 3.2 | LazyVim starter → `~/.config/nvim`，headless `Lazy! sync` 装插件（nvim-treesitter 随后会按其清单从 GitHub 拉语法并编译基础 parser） |
-| | 3.3 | `UPDATE_TS_PARSERS=1` 时按 LazyVim 列表更新 Treesitter parser 并强制 glibc 编译 |
-| 4. Node.js 与 TS/JS 工具 | 4.1 | Node.js 22 LTS → `~/.devkit/node` |
-| | 4.2 | `hunk`(hunkdiff)、`trellis`、`opencode` → `~/.devkit/npm-global` |
-| 5. Python 运行时与工具环境 | 5.1 | uv 托管 Python 3.12 + trellis/opencode 独立 venv |
-| | 5.2 | `basedpyright`、`ruff`（`uv tool`, 落 `~/.devkit/uv-tool-bin`） |
-| | 5.3 | trellis/opencode 的 venv 注入 shim |
-| 6. `.bashrc` 托管块 | 6.1 | PATH 与环境变量（shims、musl/bin、node、npm-global、uv-tool-bin、cargo、nvim），`y()` 包装函数 |
-| 7. 验收与清理 | 7.1 | 验收表：版本 + 静态链接校验 |
-| | 7.2 | 删除构建中间产物（neovim `.deps`/`build`、ts-cli、openssl-musl） |
+| 3. C/C++ 工具 | 3.1 | `clangd`（官方包，libstdc++ 静态 / glibc 2.18+）、`clang-format`、`clang-tidy`（全静态）→ `~/.devkit/clang/bin` |
+| | 3.2 | 静态 `git` 2.56.x（源码编译，自带 HTTPS/libcurl）→ `~/.devkit/git/bin` |
+| 4. Neovim / LazyVim / Treesitter | 4.1 | Neovim 最新 tag 源码编译 → `~/.devkit/nvim` |
+| | 4.2 | LazyVim starter → `~/.config/nvim`，headless `Lazy! sync` 装插件（nvim-treesitter 随后会按其清单从 GitHub 拉语法并编译基础 parser） |
+| | 4.3 | `UPDATE_TS_PARSERS=1` 时按 LazyVim 列表更新 Treesitter parser 并强制 glibc 编译 |
+| 5. Node.js 与 TS/JS 工具 | 5.1 | Node.js 22 LTS → `~/.devkit/node` |
+| | 5.2 | `hunk`(hunkdiff)、`trellis`、`opencode` → `~/.devkit/npm-global` |
+| 6. Python 运行时与工具环境 | 6.1 | uv 托管 Python 3.12 + trellis/opencode 独立 venv |
+| | 6.2 | `basedpyright`、`ruff`（`uv tool`, 落 `~/.devkit/uv-tool-bin`） |
+| | 6.3 | trellis/opencode 的 venv 注入 shim |
+| 7. `.bashrc` 托管块 | 7.1 | PATH 与环境变量（shims、musl/bin、clang/bin、git/bin、node、npm-global、uv-tool-bin、cargo、nvim），`y()` 包装函数 |
+| 8. 验收与清理 | 8.1 | 验收表：版本 + 静态链接校验 |
+| | 8.2 | 删除构建中间产物（neovim `.deps`/`build`、ts-cli、openssl-musl、git 源码） |
 
 ### Rust 工具（全部 musl 静态）
 
@@ -180,6 +192,107 @@ SKIP_APT=1 bash /home/$USER/work/project/devkit/setup-ubuntu.sh
 Rust 现代 musl 默认产出 **static-PIE**：`file` 可能显示 `dynamically linked`，
 但 `readelf -l` 没有 `INTERP` 段、`ldd` 显示 `statically linked`，脚本按
 `PT_INTERP` 判定是否为静态，不满足会直接报错。
+
+### C/C++ 工具（clangd / clang-format / clang-tidy、git）
+
+这三个 clang 工具**没有稳定的 musl 静态分发**，也不应该用 musl 静态版：tree-sitter 的
+bindgen（2.4）、Neovim 源码编译（4.1）、LazyVim 的 clangd LSP 都要读母机的 **glibc 系统头**。
+换成 musl 静态 clang，LSP 会因为找不到 `<vector>`、`<cstdio>` 而大面积报错。
+
+因此第 3 章按“静态可得的就静态”选型：
+
+| 工具 | 来源 | 链接方式 | 20.04（glibc 2.31）可用 |
+|---|---|---|---|
+| `clangd` | `clangd/clangd` 官方 release | libstdc++ 等已静态，只依赖系统 glibc（官方保证 2.18+） | ✅ 实测 |
+| `clang-format` | `cpp-linter/clang-tools-static-binaries` | **全静态**，`readelf` 无 `INTERP` | ✅ 实测 |
+| `clang-tidy` | 同上 | **全静态** | ✅ 实测 |
+| `git` | 官方源码编译 | **静态 + 内置 HTTPS（静态 libcurl/OpenSSL）** | ✅ 实测 |
+
+验证依据（20.04 容器内实跑）：
+
+```bash
+~/.devkit/clang/bin/clangd --check=/tmp/a.cpp   # 引用 <vector>/<string>，0 errors
+~/.devkit/musl/bin/../clang/bin/clang-format --version   # 22.x，全静态
+readelf -l ~/.devkit/clang/bin/clang-tidy.real | grep INTERP   # 无输出
+~/.devkit/git/bin/git help -a | grep remote-https              # 有输出
+```
+
+**为什么不用上游 static-git**：`darkvertex/static-git` 的二进制**没有 `git-remote-https`**，
+`git ls-remote https://...` 直接报 `remote helper 'https' is not a git command`。
+opencode 拉取插件/仓库都走 https，因此本脚本改为自己编译带 HTTPS 的静态 git。
+
+**为什么不用 apt 的 clangd/clang-tidy**：apt.llvm.org 的包依赖 `libLLVM.so`（解压 ~150MB）
+和 libedit/libffi/libxml2 等一串动态库，整套约 300MB，且把运行时风险转嫁给宿主机。
+上面两个静态来源没有这个问题。
+
+**clangd 找标准库头**：clangd 包只带 clang 内置头（`lib/clang/<ver>/include`），
+C++ 标准库头来自母机的 g++（`build-essential`，脚本已装）。
+`clang-tidy` 是全静态、没有内置头，脚本会生成一个 wrapper 自动加
+`--extra-arg=-resource-dir=~/.devkit/clang/lib/clang/<ver>`，直接用就行。
+
+关掉 Mason 后 LazyVim 的 C/C++ LSP 完全由这套工具提供：
+
+```lua
+-- ~/.config/nvim/lua/config/lazy.lua 之外，可在 lua/plugins/*.lua 里
+vim.g.lazyvim_python_lsp = "basedpyright"   -- 用已装的 basedpyright
+```
+
+- clangd：`neovim/nvim-lspconfig` 的 `clangd` 服务，`cmd` 里直接调用 `clangd`；
+- 格式化：`conform.nvim` 用 `clang-format`；
+- 诊断：`clangd --clang-tidy`，或单独用 `clang-tidy`。
+
+Mason 关闭方式见下一节。
+
+#### 关闭 Mason（内网环境）
+
+Mason 会在内网里向 GitHub / npm 拉取二进制，版本和仓库都不可控。你的场景只做
+C/C++ 与 Python，LSP 与格式化工具已由 devkit 提供，可以整体关掉 Mason。
+
+在 `~/.config/nvim/lua/plugins/` 下新增一个文件（例如 `no-mason.lua`）：
+
+```lua
+return {
+  -- 禁用 mason 及 mason-lspconfig；LSP 服务改由系统 PATH 中的二进制提供
+  { "mason-org/mason.nvim", enabled = false },
+  { "mason-org/mason-lspconfig.nvim", enabled = false },
+  { "williamboman/mason.nvim", enabled = false },
+  { "williamboman/mason-lspconfig.nvim", enabled = false },
+
+  -- conform.nvim 声明依赖 mason.nvim，禁用后仍需可用，这里去掉依赖
+  { "stevearc/conform.nvim", dependencies = {} },
+}
+```
+
+配合启用 LazyVim 的 C/C++ 与 Python 扩展：
+
+```lua
+return {
+  { import = "lazyvim.plugins.extras.lang.clangd" },
+  { import = "lazyvim.plugins.extras.lang.python" },
+}
+```
+
+并设 `vim.g.lazyvim_python_lsp = "basedpyright"`（在 `lua/config/options.lua` 里）。
+LazyVim 的 `python` 扩展默认用 `pyright`，改这一行就切到 devkit 已装的 basedpyright。
+
+禁掉 Mason 后各语言的能力来源：
+
+| 能力 | 工具 | 来源 |
+|---|---|---|
+| C/C++ LSP | `clangd` | `~/.devkit/clang/bin` |
+| C/C++ 格式化 | `clang-format` | 同上 |
+| C/C++ 诊断 | `clangd --clang-tidy` / `clang-tidy` | 同上 |
+| Python LSP | `basedpyright` | `~/.devkit/uv-tool-bin` |
+| Python lint/format | `ruff` | 同上 |
+| Treesitter parser | `tree-sitter` CLI | `~/.devkit/musl/bin` |
+
+需要留意的两点：
+
+- **codelldb（DAP 调试器）** 由 `mason-nvim-dap` 提供。禁用 Mason 后 C/C++ 调试适配器
+  不再自动安装；需要调试就用 `gdb`（母机 apt 里的 `gdb`）或另行放置 `codelldb`。
+- **`stylua` / `shfmt`** 是 LazyVim 默认的 mason 工具（Lua/Shell 格式化）。不影响
+  C/C++ 与 Python；需要时用 apt 或 cargo 单独安装。
+- Neovim 启动时会检查 mason 是否禁用，日志里不会再出现 Mason 的下载请求。
 
 ### Neovim / TS-JS / Python
 
@@ -256,6 +369,11 @@ DRY_RUN=1 bash /home/$USER/work/project/devkit/devkit-cleanup.sh
 | `OPENCODE_VERSION` | `latest` | opencode 版本（npm 包 `@opencode/cli`） |
 | `HUNK_VERSION` | `0.24.0` | hunk 版本 |
 | `YAZI_VERSION` | 自动解析 | yazi 版本（默认取 rsproxy 最新） |
+| `CLANGD_VERSION` | 自动解析 | clangd 版本（默认取 clangd/clangd 最新稳定 release） |
+| `CLANG_STATIC_LLVM` | 自动解析 | clang-format/clang-tidy 静态包版本（如 `22.1.8`） |
+| `FORCE_CLANG` | `0` | 重新下载 clangd / 静态 clang 工具 |
+| `GIT_VERSION` | 自动解析 | 静态 git 版本（默认取 kernel.org 最新） |
+| `FORCE_GIT` | `0` | 重新编译静态 git |
 | `DEVKIT_ROOT` | `~/.devkit` | 制品根目录 |
 
 公司镜像示例（按实际地址替换）：

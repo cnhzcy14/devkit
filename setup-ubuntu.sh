@@ -14,11 +14,12 @@
 # 章节结构（函数按章节组织，实际执行顺序见文件末尾 main）：
 #   1 预检与系统依赖
 #   2 Rust 工具链与 CLI（musl 静态；含 uv、tree-sitter CLI、yazi）
-#   3 Neovim / LazyVim / Treesitter
-#   4 Node.js 与 TS/JS 工具（hunk / Trellis / opencode）
-#   5 Python 运行时与工具 venv / shim
-#   6 .bashrc 托管块
-#   7 验收与清理
+#   3 C/C++ 工具（clangd、静态 git）
+#   4 Neovim / LazyVim / Treesitter
+#   5 Node.js 与 TS/JS 工具（hunk / Trellis / opencode）
+#   6 Python 运行时与工具 venv / shim
+#   7 .bashrc 托管块
+#   8 验收与清理
 #
 # 运行方式（ubuntu:20.04 默认无 sudo，推荐分两步）：
 #   1) root 装系统依赖：
@@ -51,6 +52,14 @@
 #   OPENCODE_VERSION=...   opencode 版本（默认 latest）
 #   HUNK_VERSION=0.24.0    hunk 版本（0.24.1 的 linux 包尚未同步到 npmmirror）
 #   YAZI_VERSION=...       yazi 版本（默认从 rsproxy 解析最新）
+#   SHUCK_VERSION=...      shuck-cli 版本（默认 0.2.11）
+#   STYLUA_VERSION=...     stylua 版本（默认 2.6.0）
+#   NEOCMAKELSP_VERSION=... neocmakelsp 版本（默认 0.12.0）
+#   LUA_LS_VERSION=...     lua-language-server 版本（默认 3.19.2）
+#   GIT_VERSION=...        静态 git 版本（默认从 kernel.org 解析最新）
+#   CLANGD_VERSION=...     clangd 版本（默认 22.1.6；置空则解析最新 release）
+#   FORCE_CLANG=1          重新下载 clangd
+#   FORCE_GIT=1            重新编译静态 git
 #   DEVKIT_ROOT=...        自定义制品根目录（默认 ~/.devkit）
 # ============================================================================
 set -Eeuo pipefail
@@ -68,6 +77,11 @@ TS_CLI_VERSION="${TS_CLI_VERSION:-0.27.2}"
 HUNK_VERSION="${HUNK_VERSION:-0.24.0}"
 OPENCODE_VERSION="${OPENCODE_VERSION:-latest}"
 UV_VERSION="${UV_VERSION:-}"
+GIT_VERSION="${GIT_VERSION:-}"
+CLANGD_VERSION="${CLANGD_VERSION:-22.1.6}"
+CLANG_STATIC_LLVM="${CLANG_STATIC_LLVM:-22.1.8}"
+FORCE_CLANG="${FORCE_CLANG:-0}"
+FORCE_GIT="${FORCE_GIT:-0}"
 PYTHON_VERSION="${PYTHON_VERSION:-3.12}"
 DEVKIT_ROOT="${DEVKIT_ROOT:-$HOME/.devkit}"
 APT_MIRROR="${APT_MIRROR:-}"
@@ -108,6 +122,8 @@ NPM_PREFIX="$DEVKIT_ROOT/npm-global"
 VENV_DIR="$DEVKIT_ROOT/venvs"
 SHIM_DIR="$DEVKIT_ROOT/shims"
 OPENSSL_MUSL="$DEVKIT_ROOT/openssl-musl"
+CLANG_PREFIX="$DEVKIT_ROOT/clang"
+GIT_PREFIX="$DEVKIT_ROOT/git"
 MUSL_TARGET="x86_64-unknown-linux-musl"
 NVIM_CONFIG="$HOME/.config/nvim"
 
@@ -660,7 +676,240 @@ EOF
 }
 
 # ============================================================================
-# 3. Neovim / LazyVim / Treesitter
+# 3. C/C++ 工具（clangd / clang-format / clang-tidy、静态 git）
+# ============================================================================
+# 为什么不能简单地「全部 musl 静态」：
+#   * clangd/clang-format/clang-tidy 官方和常见第三方分发都基于 glibc；musl 静态版
+#     没有可维护的来源。而 tree-sitter 的 bindgen（2.4）、Neovim 源码编译（4.1）、
+#     LazyVim 的 clangd LSP 都需要读母机的 glibc 系统头，换成 musl 静态 clang 反而会坏。
+#   * 这里的选择是「静态可得的就静态」：
+#       - clang-format / clang-tidy：cpp-linter 的全静态包，无任何运行时依赖；
+#       - clangd：clangd/clangd 官方包，libstdc++ 等已静态链接，只依赖系统 glibc
+#         （官方保证 glibc 2.18+），20.04 母机可直接运行；
+#       - git：源码编译为静态 + HTTPS，替代上游 static-git（那个没有 libcurl，
+#         无法 clone https:// 仓库，opencode 不可用）。
+# TLS 与 https 传输都静态链入，避免依赖各宿主机/容器的 libcurl 版本。
+
+CLANG_TOOLS_BIN="$CLANG_PREFIX/bin"
+CLANG_RESOURCE_DIR="$CLANG_PREFIX/lib/clang"
+GIT_BIN="$GIT_PREFIX/bin/git"
+
+# clang-format / clang-tidy 的静态包（cpp-linter，LOOP 维护，按 LLVM 版本发布）
+CLANG_STATIC_BASE="https://github.com/cpp-linter/clang-tools-static-binaries/releases/download"
+# clangd 官方发布（libstdc++ 静态，glibc 2.18+）
+CLANGD_BASE="https://github.com/clangd/clangd/releases/download"
+
+latest_clangd_version(){
+  local v
+  v=$(curl -fsSL --max-time 25 "https://api.github.com/repos/clangd/clangd/releases/latest" 2>/dev/null \
+      | sed -n 's/^\s*"tag_name": *"\([0-9][0-9.]*\)".*/\1/p' | head -1 || true)
+  [ -n "$v" ] || v="$CLANGD_VERSION"
+  printf '%s' "$v"
+}
+
+# 下载并安全解包一个 zip/tar 到目标目录（先解到临时目录，成功后再替换）
+install_clangd(){
+  local ver="${CLANGD_VERSION:-}" name zip tmp
+  [ -n "$ver" ] || ver=$(latest_clangd_version)
+  [ -n "$ver" ] || { warn "无法解析 clangd 版本"; return 1; }
+  compgen -G "$CLANG_TOOLS_BIN/clangd" >/dev/null && [ "$FORCE_CLANG" != "1" ] \
+    && "$CLANG_TOOLS_BIN/clangd" --version 2>/dev/null | grep -q "clangd version $ver" \
+    && { log "clangd 已存在：$("$CLANG_TOOLS_BIN/clangd" --version | head -1)"; return 0; }
+  step "clangd $ver（官方包，libstdc++ 静态 / glibc 2.18+）"
+  name="clangd-linux-$ver.zip"
+  zip="/tmp/devkit-clangd-$ver.zip"
+  gh_url "$CLANGD_BASE/$ver/$name" "$zip" || { warn "clangd 下载失败"; return 1; }
+  tmp=$(mktemp -d)
+  unzip -q -o "$zip" -d "$tmp" || { warn "clangd 解包失败"; rm -rf "$tmp" "$zip"; return 1; }
+  local src="$tmp/clangd_$ver"
+  [ -x "$src/bin/clangd" ] || { warn "clangd 包结构异常"; rm -rf "$tmp" "$zip"; return 1; }
+  mkdir -p "$CLANG_TOOLS_BIN" "$CLANG_RESOURCE_DIR"
+  # 包内 lib/clang/<ver> 提供 clang 内置头（stddef.h 等），clang-tidy 需要
+  install -m 0755 "$src/bin/clangd" "$CLANG_TOOLS_BIN/clangd"
+  if [ -d "$src/lib/clang" ]; then
+    cp -a "$src/lib/clang/." "$CLANG_RESOURCE_DIR/"
+  fi
+  rm -rf "$tmp" "$zip"
+  log "clangd → $CLANG_TOOLS_BIN/clangd"
+}
+
+# clang-format / clang-tidy：cpp-linter 全静态包，按 LLVM release 发版。
+# 默认取与 clangd 主版本相同的最新 release；CLANG_STATIC_LLVM 可覆盖（如 21.1.8）。
+resolve_clang_static_tag(){
+  local want="$1" tag="" v
+  if [ -n "$CLANG_STATIC_LLVM" ]; then
+    # CLANG_STATIC_LLVM 形如 22.1.8；release tag 形如 llvm-22.1.8-4
+    printf 'llvm-%s-4' "$CLANG_STATIC_LLVM"; return 0
+  fi
+  # 仓库发布时间最新的 release tag 形如 llvm-22.1.8-4；优先匹配主版本
+  local rels
+  rels=$(curl -fsSL --max-time 25 "https://api.github.com/repos/cpp-linter/clang-tools-static-binaries/releases?per_page=30" 2>/dev/null \
+         | grep -oE '"tag_name": *"llvm-[0-9]+\.[0-9]+\.[0-9]+-[0-9]+"' | sed 's/.*"\(llvm-[^"]*\)"/\1/' || true)
+  if [ -n "$want" ]; then
+    v=$(printf '%s\n' "$rels" | grep -E "^llvm-${want}\." | sort -V | tail -1 || true)
+  fi
+  [ -n "$v" ] || v=$(printf '%s\n' "$rels" | sort -V | tail -1 || true)
+  printf '%s' "${v:-llvm-22.1.8-4}"
+}
+
+install_clang_static_tools(){
+  local major="${1:-}" tag name dest nver
+  tag=$(resolve_clang_static_tag "$major")
+  step "clang-format / clang-tidy（全静态，$tag）"
+  mkdir -p "$CLANG_TOOLS_BIN"
+  # 资产名形如 clang-format-22_linux-amd64（只保留主版本）
+  nver=$(printf '%s' "$tag" | sed -E 's/^llvm-([0-9]+)\..*/\1/')
+  for dest in clang-format clang-tidy; do
+    if [ -x "$CLANG_TOOLS_BIN/$dest" ] && [ "$FORCE_CLANG" != "1" ]; then
+      log "$dest 已存在：$("$CLANG_TOOLS_BIN/$dest" --version 2>/dev/null | head -1)"
+      continue
+    fi
+    # 静态包资产名形如 clang-format-22_linux-amd64
+    name="${dest}-${nver}"
+    gh_url "$CLANG_STATIC_BASE/$tag/${name}_linux-amd64" "$CLANG_TOOLS_BIN/$dest.new" \
+      || { warn "$dest 下载失败"; rm -f "$CLANG_TOOLS_BIN/$dest.new"; continue; }
+    chmod 0755 "$CLANG_TOOLS_BIN/$dest.new"
+    mv -f "$CLANG_TOOLS_BIN/$dest.new" "$CLANG_TOOLS_BIN/$dest"
+    log "$dest → $CLANG_TOOLS_BIN/$dest"
+  done
+}
+
+clang_phase(){
+  step "C/C++ 工具（clangd / clang-format / clang-tidy）"
+  local ver rd real
+  install_clangd || warn "clangd 安装失败（后续 LazyVim 的 C/C++ LSP 不可用）"
+  ver=$( [ -x "$CLANG_TOOLS_BIN/clangd" ] && "$CLANG_TOOLS_BIN/clangd" --version 2>/dev/null | sed -n 's/^clangd version \([0-9]*\).*/\1/p' | head -1 )
+  install_clang_static_tools "${ver:-}"
+  # 全静态 clang-tidy 不带内置头，用 wrapper 注入 -resource-dir（指向 clangd 包里的
+  # lib/clang/<ver>/include），否则 cstddef 等头文件会报 not found。
+  rd=$(find "$CLANG_RESOURCE_DIR" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | sort -V | tail -1 || true)
+  if [ -n "$rd" ] && [ -x "$CLANG_TOOLS_BIN/clang-tidy" ] \
+     && ! head -1 "$CLANG_TOOLS_BIN/clang-tidy" 2>/dev/null | grep -q '^#!'; then
+    real="$CLANG_TOOLS_BIN/clang-tidy.real"
+    [ -f "$real" ] || mv -f "$CLANG_TOOLS_BIN/clang-tidy" "$real"
+    cat > "$CLANG_TOOLS_BIN/clang-tidy" <<EOF
+#!/bin/sh
+exec "$real" --extra-arg=-resource-dir="$rd" "\$@"
+EOF
+    chmod 0755 "$CLANG_TOOLS_BIN/clang-tidy" "$real"
+    log "clang-tidy wrapper 已注入 -resource-dir=$rd"
+  fi
+  # 自检：静态工具应无 INTERP；clangd 允许依赖系统 glibc（glibc 2.18+）
+  local b
+  for b in clang-format clang-tidy.real; do
+    [ -x "$CLANG_TOOLS_BIN/$b" ] || continue
+    is_static "$CLANG_TOOLS_BIN/$b" || warn "$b 不是全静态：$(file "$CLANG_TOOLS_BIN/$b")"
+  done
+  if [ -x "$CLANG_TOOLS_BIN/clangd" ]; then
+    runtime_ok "$CLANG_TOOLS_BIN/clangd" \
+      || warn "clangd 无法运行（检查母机 glibc 是否 >= 2.18）"
+  fi
+  [ -x "$CLANG_TOOLS_BIN/clangd" ] && [ -x "$CLANG_TOOLS_BIN/clang-format" ] \
+    || warn "C/C++ 工具不完整；LazyVim 的 clangd 扩展需要 clangd + clang-format"
+}
+
+# git 源码编译：静态链接 + HTTP(S)。上游 static-git 关闭了 libcurl，
+# 只能走 ssh/local，opencode 克隆 https 仓库会直接失败，因此自己编。
+latest_git_version(){
+  local v
+  v=$(curl -fsSL --max-time 25 "https://www.kernel.org/pub/software/scm/git/" 2>/dev/null \
+      | grep -oE 'git-[0-9]+\.[0-9]+\.[0-9]+\.tar\.xz' | sed 's/^git-//; s/\.tar\.xz$//' | sort -V | tail -1 || true)
+  [ -n "$v" ] || v="$GIT_VERSION"
+  printf '%s' "$v"
+}
+
+# Ubuntu 自带 libcurl.a 依赖 idn2/rtmp/ssh/psl/nghttp2/brotli 等一长串静态库，
+# 全静态链接不现实。自编一个只启用 OpenSSL+zlib、只要 http/https 的精简静态 libcurl。
+CURL_STATIC="$DEVKIT_ROOT/curl-static"
+ensure_static_libcurl(){
+  local ver="${CURL_VERSION:-}" tar="$DEVKIT_ROOT/src/curl.tar.gz" src="$DEVKIT_ROOT/src/curl"
+  if [ -f "$CURL_STATIC/lib/libcurl.a" ] && [ "$FORCE_GIT" != "1" ]; then
+    log "静态 libcurl 已存在：$CURL_STATIC/lib/libcurl.a"; return 0
+  fi
+  step "编译静态 libcurl（仅 HTTPS，供静态 git 使用）"
+  [ -n "$ver" ] || ver=$(curl -fsSL --max-time 25 "https://curl.se/download/" 2>/dev/null \
+      | grep -oE 'curl-[0-9]+\.[0-9]+\.[0-9]+\.tar\.gz' | sed 's/^curl-//; s/\.tar\.gz$//' | sort -V | tail -1 || true)
+  [ -n "$ver" ] || { warn "无法解析 curl 版本"; return 1; }
+  mkdir -p "$(dirname "$src")"
+  if [ ! -s "$tar" ]; then
+    curl -fsSL --retry 3 --max-time 600 "https://curl.se/download/curl-$ver.tar.gz" -o "$tar" \
+      || { warn "curl 源码下载失败"; return 1; }
+  fi
+  rm -rf "$src"; mkdir -p "$src"
+  tar xzf "$tar" -C "$src" --strip-components=1
+  (
+    cd "$src"
+    ./configure --prefix="$CURL_STATIC" --disable-shared --enable-static \
+      --with-ssl=/usr --with-zlib=/usr \
+      --without-libidn2 --without-librtmp --without-libssh --without-libssh2 \
+      --without-libpsl --without-nghttp2 --without-brotli --without-zstd \
+      --without-libgsasl --without-gssapi --without-ldap --without-ldaps \
+      --disable-ftp --disable-file --disable-proxy --disable-rtsp \
+      --disable-dict --disable-telnet --disable-tftp --disable-pop3 \
+      --disable-imap --disable-smb --disable-smtp --disable-gopher \
+      --disable-mqtt --disable-manual --disable-libcurl-option >/dev/null
+    make -j"$(nproc)" >/dev/null
+    make install >/dev/null
+  ) || { warn "静态 libcurl 编译失败"; return 1; }
+  [ -f "$CURL_STATIC/lib/libcurl.a" ] || { warn "libcurl.a 未生成"; return 1; }
+  rm -rf "$src"
+  log "静态 libcurl → $CURL_STATIC"
+}
+
+git_phase(){
+  step "git（源码编译，静态 + HTTPS）"
+  local ver="${GIT_VERSION:-}" src="$DEVKIT_ROOT/src/git" tar
+  [ -n "$ver" ] || ver=$(latest_git_version)
+  [ -n "$ver" ] || { warn "无法解析 git 版本"; return 1; }
+  if [ -x "$GIT_BIN" ] && [ "$FORCE_GIT" != "1" ] \
+     && "$GIT_BIN" --version 2>/dev/null | grep -q " $ver" \
+     && "$GIT_BIN" help -a 2>/dev/null | grep -q 'remote-https'; then
+    log "git 已存在：$("$GIT_BIN" --version)（FORCE_GIT=1 重编）"
+    return 0
+  fi
+  ensure_static_libcurl || { warn "跳过静态 git（缺少静态 libcurl）"; return 1; }
+  log "目标版本：git $ver"
+  tar="/tmp/devkit-git-$ver.tar.xz"
+  if [ ! -s "$tar" ]; then
+    for u in "https://www.kernel.org/pub/software/scm/git/git-$ver.tar.xz" \
+             "https://mirrors.edge.kernel.org/pub/software/scm/git/git-$ver.tar.xz"; do
+      curl -fsSL --retry 3 --max-time 600 "$u" -o "$tar" && break || rm -f "$tar"
+    done
+  fi
+  [ -s "$tar" ] || { warn "git 源码下载失败；其他工具不受影响（自动克隆用系统 git）"; return 1; }
+  rm -rf "$src"; mkdir -p "$src" "$(dirname "$GIT_PREFIX")"
+  tar xJf "$tar" -C "$src" --strip-components=1
+  # 关键参数（已实测）：
+  #   * CURL_LIBCURL / EXTLIBS 必须单独传；configure 会静默丢弃 LIBS=。
+  #   * NO_RUST=YesPlease：git 2.56 起默认编译 Rust 组件（cargo），母机没有就失败。
+  #   * -ldl -lpthread 放在最后，否则静态链接时报 pthread_create 未定义。
+  local mk_args=(
+    NO_PERL=YesPlease NO_PYTHON=YesPlease NO_TCLTK=YesPlease
+    NO_GETTEXT=YesPlease NO_RUST=YesPlease NO_INSTALL_HARDLINKS=YesPlease
+    CFLAGS="-O2 -I$CURL_STATIC/include"
+    LDFLAGS="-static -L$CURL_STATIC/lib"
+    CURL_LIBCURL="-L$CURL_STATIC/lib -lcurl"
+    EXTLIBS="-lssl -lcrypto -lz -lexpat -lpcre2-8 -ldl -lpthread"
+  )
+  (
+    cd "$src"
+    make configure >/dev/null
+    ./configure --prefix="$GIT_PREFIX" --without-tcltk \
+      CFLAGS="-O2 -I$CURL_STATIC/include" \
+      LDFLAGS="-static -L$CURL_STATIC/lib" >/dev/null
+    make "${mk_args[@]}" -j"$(nproc)" >/dev/null
+    make "${mk_args[@]}" install >/dev/null
+  ) || { warn "git 静态编译失败（保留系统 git）"; return 1; }
+  rm -f "$tar"
+  is_static "$GIT_BIN" || die "git 不是静态链接：$(file "$GIT_BIN")"
+  "$GIT_BIN" help -a 2>/dev/null | grep -q 'remote-https' \
+    || die "静态 git 不含 remote-https（HTTPS 不可用，opencode 无法克隆仓库）"
+  runtime_ok "$GIT_BIN" || die "静态 git 运行时崩溃"
+  log "git → $GIT_BIN（$("$GIT_BIN" --version)）"
+}
+
+# ============================================================================
+# 4. Neovim / LazyVim / Treesitter
 # ============================================================================
 track_nvim_dir(){
   local dir="$1" key="$2"
@@ -1072,6 +1321,20 @@ if [ -d "$HOME/.devkit" ]; then
   case ":$PATH:" in *":$HOME/.devkit/shims:"*) ;; *)
     export PATH="$HOME/.devkit/shims:$HOME/.devkit/musl/bin:$HOME/.devkit/node/bin:$HOME/.devkit/npm-global/bin:$HOME/.devkit/uv-tool-bin:$HOME/.devkit/cargo/bin:$PATH" ;;
   esac
+  # clangd / clang-format / clang-tidy：clang-format、clang-tidy 为全静态，
+  # clangd 只依赖系统 glibc（2.18+）；放在 nvim 的 PATH 之后、系统 PATH 之前，
+  # 这样 Neovim 的 clangd LSP 与命令行都用 devkit 这一份。
+  case ":$PATH:" in *":$HOME/.devkit/clang/bin:"*) ;; *)
+    export PATH="$HOME/.devkit/clang/bin:$PATH" ;;
+  esac
+  # 静态编译的 git（含 HTTPS 传输）：优先于发行版 git，供 opencode 等工具使用。
+  case ":$PATH:" in *":$HOME/.devkit/git/bin:"*) ;; *)
+    export PATH="$HOME/.devkit/git/bin:$PATH" ;;
+  esac
+  # 静态 OpenSSL 不带 CA 证书链；指到系统 bundle，否则 https 克隆报
+  # "unable to get local issuer certificate"。只在文件存在时设置。
+  [ -f /etc/ssl/certs/ca-certificates.crt ] && \
+    export GIT_SSL_CAINFO="/etc/ssl/certs/ca-certificates.crt"
   export NPM_CONFIG_PREFIX="$HOME/.devkit/npm-global"
   export NPM_CONFIG_CACHE="$HOME/.devkit/cache/npm"
   export RUSTUP_HOME="$HOME/.devkit/rustup"
@@ -1109,7 +1372,7 @@ EOF
 # ---------------------------- 7.1 验收 -------------------------------------
 verify_phase(){
   step "验收"
-  export PATH="$UV_TOOL_BIN_DIR:$SHIM_DIR:$MUSL_BIN:$NVIM_PREFIX/bin:$NODE_PREFIX/bin:$NPM_PREFIX/bin:$CARGO_HOME/bin:$PATH"
+  export PATH="$UV_TOOL_BIN_DIR:$SHIM_DIR:$MUSL_BIN:$CLANG_TOOLS_BIN:$GIT_PREFIX/bin:$NVIM_PREFIX/bin:$NODE_PREFIX/bin:$NPM_PREFIX/bin:$CARGO_HOME/bin:$PATH"
   local bin p v static_ok=0 static_bad=0 other_bad=0
   printf '\n%-10s %-8s %-52s %s\n' 工具 类型 路径 版本
   for bin in keifu yazi ya gitui sk ducker eza bat rg fd btm zoxide uv uvx; do
@@ -1131,7 +1394,7 @@ verify_phase(){
     if [ -x "$SHIM_DIR/opencode" ]; then other_bins="$SHIM_DIR/opencode $other_bins"
     else other_bins="$NPM_PREFIX/bin/opencode $other_bins"; fi
   fi
-  other_bins="nvim $other_bins"
+  other_bins="nvim clangd clang-format clang-tidy git $other_bins"
   for bin in $other_bins; do
     p=$(command -v "$bin" 2>/dev/null || true)
     if [ -n "$p" ]; then
@@ -1168,7 +1431,8 @@ cleanup_build_artifacts_phase(){
   step "清理构建中间产物"
   local p removed=0
   for p in "$NVIM_SRC/.deps" "$NVIM_SRC/build" \
-           "$DEVKIT_ROOT/ts-cli" "$OPENSSL_MUSL" "$DEVKIT_ROOT/src/yazi"; do
+           "$DEVKIT_ROOT/ts-cli" "$OPENSSL_MUSL" "$DEVKIT_ROOT/src/yazi" \
+           "$DEVKIT_ROOT/src/git"; do
     [ -e "$p" ] || continue
     log "删除 $p"
     rm -rf "$p"
@@ -1189,12 +1453,16 @@ main(){
     log "APT_ONLY=1：系统依赖已就绪，退出。请用普通用户执行完整脚本（SKIP_APT=1）"
     exit 0
   fi
-  # 章节顺序：Rust → Neovim → TS/JS → Python
+  # 章节顺序：Rust → C/C++ → Neovim → TS/JS → Python
   rust_phase
   rust_tools_phase
   step "yazi / ya"
   install_yazi || die "yazi/ya 安装失败"
   ts_cli_phase
+  # C/C++ 工具要在 Neovim 之前就位（LazyVim 的 clangd 扩展依赖它们），
+  # 静态 git 也让后续 GitHub 克隆更稳。
+  clang_phase
+  git_phase
   # 先写 .bashrc：后面 nvim/LazyVim 即使网络失败，musl 工具也已可用。
   bashrc_phase
   nvim_phase
