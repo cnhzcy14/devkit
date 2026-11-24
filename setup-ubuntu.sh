@@ -967,6 +967,74 @@ use_glibc_cc_for_nvim(){
   unset CFLAGS CXXFLAGS CFLAGS_x86_64_unknown_linux_musl CXXFLAGS_x86_64_unknown_linux_musl
 }
 
+# 托管 LazyVim 配置：只对带 .devkit-managed 的配置写入，重跑幂等覆盖。
+# 关闭 Mason，改用 devkit 提供的 clangd / basedpyright / shuck / stylua 等。
+write_lazyvim_devkit_config(){
+  local plugin_dir="$NVIM_CONFIG/lua/plugins"
+  local opts_file="$NVIM_CONFIG/lua/config/options.lua"
+  mkdir -p "$plugin_dir"
+  cat > "$plugin_dir/devkit.lua" <<'LUA'
+-- 由 devkit setup-ubuntu.sh 生成，重跑会覆盖；自定义请另建文件。
+return {
+  -- 关闭 Mason：LSP / formatter 统一由 devkit 安装。
+  { "mason-org/mason.nvim", enabled = false },
+  { "mason-org/mason-lspconfig.nvim", enabled = false },
+  { "williamboman/mason.nvim", enabled = false },
+  { "williamboman/mason-lspconfig.nvim", enabled = false },
+  { "stevearc/conform.nvim", dependencies = {} },
+
+  { import = "lazyvim.plugins.extras.lang.clangd" },
+  { import = "lazyvim.plugins.extras.lang.cmake" },
+  { import = "lazyvim.plugins.extras.lang.python" },
+
+  {
+    "stevearc/conform.nvim",
+    opts = {
+      -- C/C++ 不配 formatter：LazyVim 默认 lsp_format = "fallback"，
+      -- 保存时由 clangd 的内置 clang-format 完成格式化。
+      formatters_by_ft = {
+        sh = { "shuck" },
+      },
+      formatters = {
+        shuck = { command = "shuck", args = { "format", "--stdin-filename", "$FILENAME", "-" } },
+      },
+    },
+  },
+}
+LUA
+  mkdir -p "$(dirname "$opts_file")"
+  if [ -f "$opts_file" ]; then
+    grep -q 'lazyvim_python_lsp' "$opts_file" \
+      || printf '\n-- devkit: 使用 devkit 安装的 basedpyright\nvim.g.lazyvim_python_lsp = "basedpyright"\n' >> "$opts_file"
+  else
+    printf '-- devkit: 使用 devkit 安装的 basedpyright\nvim.g.lazyvim_python_lsp = "basedpyright"\n' > "$opts_file"
+  fi
+}
+
+# extras 引入的 cpp/cmake/ninja/rst parser 不一定是 LazyVim 默认集，sync 后补装。
+ensure_lazyvim_parsers(){
+  local script=/tmp/devkit-ts-extra.lua
+  [ -x "$NVIM_PREFIX/bin/nvim" ] || return 0
+  use_glibc_cc_for_nvim
+  export PATH="$MUSL_BIN:$NVIM_PREFIX/bin:$PATH"
+  cat > "$script" <<'LUA'
+local TS = require("nvim-treesitter")
+TS.install({ "cpp", "cmake", "ninja", "rst" }):await(function(err)
+  if err then
+    vim.cmd("cquit 1")
+  else
+    vim.cmd("qa")
+  end
+end)
+LUA
+  if "$NVIM_PREFIX/bin/nvim" --headless -c "luafile $script"; then
+    log "extras parser 就绪（cpp/cmake/ninja/rst）"
+  else
+    warn "extras parser 未完成（首次打开对应文件时会自动补编）"
+  fi
+  rm -f "$script"
+}
+
 # ---------------------------- 4.1 Neovim（源码编译） -----------------------
 latest_nvim_tag(){
   local refs tag m
@@ -1075,6 +1143,7 @@ lazyvim_phase(){
       || die "LazyVim starter 克隆失败"
     rm -rf "$NVIM_CONFIG/.git"
     touch "$NVIM_CONFIG/.devkit-managed"
+    managed=1
     # 容器内无 X11：用 OSC52 通过终端访问宿主机剪贴板
     sed -i '1i vim.g.clipboard = "osc52"' "$NVIM_CONFIG/init.lua"
     state_set NVIM_CONFIG_CREATED 1
@@ -1089,11 +1158,20 @@ lazyvim_phase(){
   if [ ! -x "$NVIM_PREFIX/bin/nvim" ]; then
     warn "nvim 缺失，跳过 Lazy sync"; return 0
   fi
+  if [ "$managed" = "1" ]; then
+    write_lazyvim_devkit_config
+    log "LazyVim 托管配置：已禁用 Mason，启用 clangd/cmake/python extras"
+  fi
   log "headless Lazy! sync（插件下载走 GitHub；失败可重跑续传）"
   use_glibc_cc_for_nvim
-  "$NVIM_PREFIX/bin/nvim" --headless "+Lazy! sync" +qa \
-    && log "Lazy sync 完成" \
-    || warn "Lazy sync 未完成，网络好转后重跑本脚本"
+  if "$NVIM_PREFIX/bin/nvim" --headless "+Lazy! sync" +qa; then
+    log "Lazy sync 完成"
+    if [ "$managed" = "1" ]; then
+      ensure_lazyvim_parsers
+    fi
+  else
+    warn "Lazy sync 未完成，网络好转后重跑本脚本"
+  fi
 }
 
 # ---------------------------- 4.3 Treesitter parser（glibc） ---------------

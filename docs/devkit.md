@@ -163,8 +163,8 @@ SKIP_APT=1 bash /home/$USER/work/project/devkit/setup-ubuntu.sh
 | 3. C/C++ 工具 | 3.1 | `clangd`（官方包，libstdc++ 静态 / glibc 2.18+）→ `~/.devkit/clang/bin`；LSP、内置 clang-format / clang-tidy |
 | | 3.2 | 静态 `git` 2.56.x（源码编译，自带 HTTPS/libcurl）→ `~/.devkit/git/bin` |
 | 4. Neovim / LazyVim / Treesitter | 4.1 | Neovim 最新 tag 源码编译 → `~/.devkit/nvim` |
-| | 4.2 | LazyVim starter → `~/.config/nvim`，headless `Lazy! sync` 装插件（nvim-treesitter 随后会按其清单从 GitHub 拉语法并编译基础 parser） |
-| | 4.3 | `UPDATE_TS_PARSERS=1` 时按 LazyVim 列表更新 Treesitter parser 并强制 glibc 编译 |
+| | 4.2 | LazyVim starter → `~/.config/nvim`，headless `Lazy! sync` 装插件（nvim-treesitter 随后会按其清单从 GitHub 拉语法并编译基础 parser）；托管配置写入 `lua/plugins/devkit.lua`（关 Mason、clangd/cmake/python extras、shuck）与 `options.lua`（basedpyright） |
+| | 4.3 | `UPDATE_TS_PARSERS=1` 时按 LazyVim 列表更新 Treesitter parser；托管配置另补装 `cpp/cmake/ninja/rst`，均强制 glibc 编译 |
 | 5. Node.js 与 TS/JS 工具 | 5.1 | Node.js 22 LTS → `~/.devkit/node` |
 | | 5.2 | `hunk`(hunkdiff)、`trellis`、`opencode` → `~/.devkit/npm-global` |
 | 6. Python 运行时与工具环境 | 6.1 | uv 托管 Python 3.12 + trellis/opencode 独立 venv |
@@ -253,39 +253,57 @@ C++ 标准库头来自母机的 g++（`build-essential`，脚本已装）。
 - 格式化：clangd 内置 clang-format（LSP fallback）；
 - 诊断：clangd `--clang-tidy`。
 
-Mason 关闭方式见下一节。
+Mason 由脚本自动关闭，见下一节。
 
-#### 关闭 Mason（内网环境）
+#### 自动关闭 Mason（托管配置）
 
-Mason 会在内网里向 GitHub / npm 拉取二进制，版本和仓库都不可控。你的场景只做
-C/C++ 与 Python，LSP 与格式化工具已由 devkit 提供，可以整体关掉 Mason。
+用本脚本安装的 LazyVim（`~/.config/nvim/.devkit-managed`）会在每次安装/重跑时
+自动写入 `~/.config/nvim/lua/plugins/devkit.lua`，并幂等设置
+`lua/config/options.lua` 里的 `vim.g.lazyvim_python_lsp`。内容包括：
 
-在 `~/.config/nvim/lua/plugins/` 下新增一个文件（例如 `no-mason.lua`）：
+- 禁用两种 org 名的 `mason.nvim` / `mason-lspconfig.nvim`；
+- 去掉 `conform.nvim` 对 `mason.nvim` 的依赖；
+- 导入 `lang.clangd`、`lang.cmake`、`lang.python` 三个 extras；
+- Shell 格式化从默认的 `shfmt` 改为 `shuck`；Lua 继续用 LazyVim 默认的 `stylua`
+  （devkit 已提供）；
+- `vim.g.lazyvim_python_lsp = "basedpyright"`。
+
+Lazy sync 成功后脚本还会补装 extras 需要的 Treesitter parser：
+`cpp / cmake / ninja / rst`（落在 `~/.local/share/nvim/site/parser`）。
+
+非托管配置可手工加入等价片段：
 
 ```lua
+-- ~/.config/nvim/lua/plugins/devkit.lua
 return {
-  -- 禁用 mason 及 mason-lspconfig；LSP 服务改由系统 PATH 中的二进制提供
+  -- 禁用 mason 及 mason-lspconfig；LSP 服务改由 PATH 中的 devkit 二进制提供
   { "mason-org/mason.nvim", enabled = false },
   { "mason-org/mason-lspconfig.nvim", enabled = false },
   { "williamboman/mason.nvim", enabled = false },
   { "williamboman/mason-lspconfig.nvim", enabled = false },
 
-  -- conform.nvim 声明依赖 mason.nvim，禁用后仍需可用，这里去掉依赖
+  -- conform.nvim 声明依赖 mason.nvim，禁用后这里去掉依赖
   { "stevearc/conform.nvim", dependencies = {} },
-}
-```
 
-配合启用 LazyVim 的 C/C++ 与 Python 扩展：
-
-```lua
-return {
   { import = "lazyvim.plugins.extras.lang.clangd" },
+  { import = "lazyvim.plugins.extras.lang.cmake" },
   { import = "lazyvim.plugins.extras.lang.python" },
+
+  {
+    "stevearc/conform.nvim",
+    opts = {
+      -- C/C++ 不配 formatter，保存时走 clangd 内置 clang-format（LSP fallback）
+      formatters_by_ft = { sh = { "shuck" } },
+      formatters = {
+        shuck = {
+          command = "shuck",
+          args = { "format", "--stdin-filename", "$FILENAME", "-" },
+        },
+      },
+    },
+  },
 }
 ```
-
-并设 `vim.g.lazyvim_python_lsp = "basedpyright"`（在 `lua/config/options.lua` 里）。
-LazyVim 的 `python` 扩展默认用 `pyright`，改这一行就切到 devkit 已装的 basedpyright。
 
 禁掉 Mason 后各语言的能力来源：
 
@@ -294,17 +312,19 @@ LazyVim 的 `python` 扩展默认用 `pyright`，改这一行就切到 devkit �
 | C/C++ LSP | `clangd` | `~/.devkit/clang/bin` |
 | C/C++ 格式化 | clangd 内置 clang-format（LSP fallback） | 同上 |
 | C/C++ 诊断 | clangd 内置 clang-tidy（`--clang-tidy`） | 同上 |
+| CMake LSP | `neocmakelsp` | `~/.devkit/musl/bin` |
 | Python LSP | `basedpyright` | `~/.devkit/uv-tool-bin` |
 | Python lint/format | `ruff` | 同上 |
-| Treesitter parser | `tree-sitter` CLI | `~/.devkit/musl/bin` |
+| Lua LSP | `lua-language-server` | `~/.devkit/lua-ls/bin` |
+| Lua 格式化 | `stylua` | `~/.devkit/musl/bin` |
+| Shell 格式化 | `shuck`（替代 `shfmt`） | 同上 |
+| Treesitter parser | `tree-sitter` CLI | 同上 |
 
-需要留意的两点：
+需要留意：
 
 - **codelldb（DAP 调试器）** 由 `mason-nvim-dap` 提供。禁用 Mason 后 C/C++ 调试适配器
   不再自动安装；需要调试就用 `gdb`（母机 apt 里的 `gdb`）或另行放置 `codelldb`。
-- **`stylua` / `shuck`**：LazyVim 默认用 mason 装 `stylua`（Lua）和 `shfmt`（Shell）；
-  devkit 已提供 musl 静态的 `stylua` 与 `shuck`（替代 shfmt），无需 Mason。
-- Neovim 启动时会检查 mason 是否禁用，日志里不会再出现 Mason 的下载请求。
+- Neovim 启动时不会再出现 Mason 的下载请求；`LazyVim.has("mason.nvim")` 为 false。
 
 ### Neovim / TS-JS / Python
 
