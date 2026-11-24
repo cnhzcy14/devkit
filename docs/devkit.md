@@ -153,7 +153,7 @@ SKIP_APT=1 bash /home/$USER/work/project/devkit/setup-ubuntu.sh
 
 | 章节 | 子节 | 安装内容 |
 |---|---|---|
-| 1. 预检与系统依赖 | 1.1 | root 用 apt 装构建依赖（curl/git/build-essential/cmake/ninja/gettext/musl-tools/libclang-dev/libncurses-dev/libssl-dev 等），含国内源探测与回退 |
+| 1. 预检与系统依赖 | 1.1 | root 用 apt 装构建依赖（curl/git/build-essential/cmake/ninja/gettext/musl-tools/libclang-dev/libncurses-dev/libssl-dev/libpcre2-dev/libexpat1-dev 等），含国内源探测与回退 |
 | 2. Rust 工具链与 CLI | 2.1 | rustup + stable + `x86_64-unknown-linux-musl`，写 cargo 镜像与 crt-static 配置 |
 | | 2.2 | `keifu` `gitui` `sk` `ducker` `eza` `bat` `rg` `fd` `btm` `zoxide` `uv`/`uvx` |
 | | 2.3 | `yazi` / `ya`（GitHub musl 预编译包优先，失败源码编译） |
@@ -235,7 +235,8 @@ ls ~/.devkit/git/libexec/git-core/git-remote-https   # 存在（HTTPS 可用）
 opencode 拉取插件/仓库都走 https，因此本脚本改为自己编译带 HTTPS 的静态 git。
 
 **静态 libcurl 的版本上限**：git 的 HTTPS 依赖脚本自编的精简静态 libcurl（只启用
-OpenSSL + zlib，关闭 LDAP 等无关协议）。curl 8.18 起**硬性要求 OpenSSL >= 3.0**，
+OpenSSL + zlib，关闭 LDAP 等无关协议，**保留 proxy 支持**以适配内网
+`http_proxy`/`https_proxy`）。curl 8.18 起**硬性要求 OpenSSL >= 3.0**，
 而 Ubuntu 20.04/22.04 自带的是 OpenSSL 1.1.1，因此脚本会按宿主 OpenSSL 版本自动
 封顶到 `8.17.0`（最后一个兼容 1.1.1 的版本）；OpenSSL 3.x 的宿主则用最新版。
 需要覆盖时设 `CURL_VERSION`。
@@ -399,7 +400,7 @@ DRY_RUN=1 bash /home/$USER/work/project/devkit/devkit-cleanup.sh
 | `STYLUA_VERSION` | `2.6.0` | stylua 版本（musl 静态） |
 | `NEOCMAKELSP_VERSION` | `0.12.0` | neocmakelsp 版本（官方 musl 包） |
 | `LUA_LS_VERSION` | `3.19.2` | lua-language-server 版本（官方 linux-x64） |
-| `FORCE_RUST_TOOLS` | `0` | 强制重编所有 Rust 工具 |
+| `FORCE_RUST_TOOLS` | `0` | 强制重编 Rust 工具，并重装 neocmakelsp/lua-language-server |
 | `FORCE_LAZYVIM` | `0` | 备份旧配置并重建 LazyVim |
 | `WITH_OPENCODE` | `1` | 通过 npm 安装 opencode；设 `0` 跳过 |
 | `OPENCODE_VERSION` | `latest` | opencode 版本（npm 包 `@opencode/cli`） |

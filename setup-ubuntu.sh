@@ -815,6 +815,7 @@ latest_git_version(){
 
 # Ubuntu 自带 libcurl.a 依赖 idn2/rtmp/ssh/psl/nghttp2/brotli 等一长串静态库，
 # 全静态链接不现实。自编一个只启用 OpenSSL+zlib、只要 http/https 的精简静态 libcurl。
+# 保留 proxy 支持：公司内网常用 http_proxy/https_proxy，git 必须能识别。
 # curl 8.18 起硬性要求 OpenSSL >= 3.0；20.04/22.04 的 1.1.1 只能用 8.17.0。
 CURL_STATIC="$DEVKIT_ROOT/curl-static"
 CURL_LAST_OPENSSL11="8.17.0"
@@ -867,7 +868,7 @@ ensure_static_libcurl(){
       --without-libpsl --without-nghttp2 --without-brotli --without-zstd \
       --without-libgsasl --without-gssapi \
       --disable-ldap --disable-ldaps \
-      --disable-ftp --disable-file --disable-proxy --disable-rtsp \
+      --disable-ftp --disable-file --disable-rtsp \
       --disable-dict --disable-telnet --disable-tftp --disable-pop3 \
       --disable-imap --disable-smb --disable-smtp --disable-gopher \
       --disable-mqtt --disable-manual --disable-libcurl-option >configure.log 2>&1; then
@@ -1030,7 +1031,7 @@ LUA
   if "$NVIM_PREFIX/bin/nvim" --headless -c "luafile $script"; then
     log "extras parser 就绪（cpp/cmake/ninja/rst）"
   else
-    warn "extras parser 未完成（首次打开对应文件时会自动补编）"
+    warn "extras parser 未完成（可重跑脚本或手动 :TSInstall cpp cmake ninja rst）"
   fi
   rm -f "$script"
 }

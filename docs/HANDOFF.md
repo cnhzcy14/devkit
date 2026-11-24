@@ -104,7 +104,7 @@ lua-language-server 3.19.2   ~/.devkit/lua-ls/bin（官方 glibc 包）
 
 - clangd 同时提供 LSP、内置 clang-format 格式化与 `--clang-tidy` 诊断；未安装独立的
   `clang-format` / `clang-tidy`（旧版遗留文件会在重跑时自动清理）。
-- 静态 git 由源码编译，内置精简静态 libcurl（仅 HTTPS）与静态 OpenSSL；
+- 静态 git 由源码编译，内置精简静态 libcurl（HTTPS + proxy）与静态 OpenSSL；
   实跑 `git clone https://github.com/git/git.git` 成功。
 - 静态 libcurl 版本按宿主 OpenSSL 自动选择：curl 8.18+ 要求 OpenSSL 3.0，
   20.04/22.04 的 1.1.1 宿主封顶 `8.17.0`（`CURL_VERSION` 可覆盖）。
