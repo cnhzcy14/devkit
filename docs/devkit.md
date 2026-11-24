@@ -29,6 +29,7 @@ Ubuntu 容器内运行；宿主机只负责启动容器，不直接运行安装�
 ├── musl/bin/       musl 静态 Rust 工具（含 uv/uvx）+ tree-sitter CLI/wrapper
 ├── clang/bin/      clangd（LSP + 内置 clang-format / clang-tidy，glibc 2.18+）
 ├── git/bin/        静态编译的 git（自带 HTTPS），优先于系统 git
+├── lua-ls/bin/     lua-language-server（官方 glibc 包，Lua LSP）
 ├── python-bin/     uv 安装的 Python 3.12 可执行文件（不加入全局 PATH）
 ├── venvs/          Trellis/opencode 各自的 Python venv
 ├── shims/          只为工具进程注入私有 PATH 的 trellis/tl/opencode shim
@@ -157,6 +158,8 @@ SKIP_APT=1 bash /home/$USER/work/project/devkit/setup-ubuntu.sh
 | | 2.2 | `keifu` `gitui` `sk` `ducker` `eza` `bat` `rg` `fd` `btm` `zoxide` `uv`/`uvx` |
 | | 2.3 | `yazi` / `ya`（GitHub musl 预编译包优先，失败源码编译） |
 | | 2.4 | `tree-sitter` CLI（musl 静态 + wrapper，供 Neovim 编译 parser） |
+| | 2.5 | `shuck`（替代 shfmt）、`stylua`（cargo 源码编译，musl 静态） |
+| | 2.6 | `neocmakelsp`（官方 musl 包）、`lua-language-server`（官方 linux-x64，glibc 2.17+） |
 | 3. C/C++ 工具 | 3.1 | `clangd`（官方包，libstdc++ 静态 / glibc 2.18+）→ `~/.devkit/clang/bin`；LSP、内置 clang-format / clang-tidy |
 | | 3.2 | 静态 `git` 2.56.x（源码编译，自带 HTTPS/libcurl）→ `~/.devkit/git/bin` |
 | 4. Neovim / LazyVim / Treesitter | 4.1 | Neovim 最新 tag 源码编译 → `~/.devkit/nvim` |
@@ -186,12 +189,19 @@ SKIP_APT=1 bash /home/$USER/work/project/devkit/setup-ubuntu.sh
 | `fd`（fd-find） | `fd-find` |
 | `btm`（bottom） | `bottom`（`battery,zfs,gpu`：支持 Linux 上的 AMD/Intel GPU；关闭 `nvidia`，因为 NVML 仅支持 glibc） |
 | `zoxide` | `zoxide` |
+| `shuck` | `shuck-cli`（替代 shfmt，Shell 格式化/语法检查） |
+| `stylua` | `stylua`（Lua 格式化） |
 | `uv` / `uvx` | 官方 musl 静态预编译包；同时用于管理 Python |
 
 编译参数：`--target x86_64-unknown-linux-musl` + `target-feature=+crt-static`。
 Rust 现代 musl 默认产出 **static-PIE**：`file` 可能显示 `dynamically linked`，
 但 `readelf -l` 没有 `INTERP` 段、`ldd` 显示 `statically linked`，脚本按
 `PT_INTERP` 判定是否为静态，不满足会直接报错。
+
+编辑器相关的非 Rust 组件：
+
+- `neocmakelsp`：官方 `x86_64-unknown-linux-musl` 预编译包，落 `~/.devkit/musl/bin`；
+- `lua-language-server`：官方 `linux-x64` 包（glibc 2.17+），落 `~/.devkit/lua-ls`。
 
 ### C/C++ 工具（clangd、git）
 
@@ -365,6 +375,10 @@ DRY_RUN=1 bash /home/$USER/work/project/devkit/devkit-cleanup.sh
 | `FORCE_TS_CLI` | `0` | 强制重编 tree-sitter CLI（musl 静态） |
 | `UPDATE_TS_PARSERS` | `0` | `1` 安装/更新 LazyVim ensure_installed 的 parser |
 | `TS_CLI_VERSION` | `0.27.2` | tree-sitter CLI 版本，必须 >=0.26.1 |
+| `SHUCK_VERSION` | `0.2.11` | shuck-cli 版本（musl 静态） |
+| `STYLUA_VERSION` | `2.6.0` | stylua 版本（musl 静态） |
+| `NEOCMAKELSP_VERSION` | `0.12.0` | neocmakelsp 版本（官方 musl 包） |
+| `LUA_LS_VERSION` | `3.19.2` | lua-language-server 版本（官方 linux-x64） |
 | `FORCE_RUST_TOOLS` | `0` | 强制重编所有 Rust 工具 |
 | `FORCE_LAZYVIM` | `0` | 备份旧配置并重建 LazyVim |
 | `WITH_OPENCODE` | `1` | 通过 npm 安装 opencode；设 `0` 跳过 |

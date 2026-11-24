@@ -83,6 +83,10 @@ CURL_VERSION="${CURL_VERSION:-}"
 CLANGD_VERSION="${CLANGD_VERSION:-22.1.6}"
 FORCE_CLANG="${FORCE_CLANG:-0}"
 FORCE_GIT="${FORCE_GIT:-0}"
+SHUCK_VERSION="${SHUCK_VERSION:-0.2.11}"
+STYLUA_VERSION="${STYLUA_VERSION:-2.6.0}"
+NEOCMAKELSP_VERSION="${NEOCMAKELSP_VERSION:-0.12.0}"
+LUA_LS_VERSION="${LUA_LS_VERSION:-3.19.2}"
 PYTHON_VERSION="${PYTHON_VERSION:-3.12}"
 DEVKIT_ROOT="${DEVKIT_ROOT:-$HOME/.devkit}"
 APT_MIRROR="${APT_MIRROR:-}"
@@ -125,6 +129,8 @@ SHIM_DIR="$DEVKIT_ROOT/shims"
 OPENSSL_MUSL="$DEVKIT_ROOT/openssl-musl"
 CLANG_PREFIX="$DEVKIT_ROOT/clang"
 GIT_PREFIX="$DEVKIT_ROOT/git"
+LUA_LS_PREFIX="$DEVKIT_ROOT/lua-ls"
+NEOCMAKELSP_BIN="$MUSL_BIN/neocmakelsp"
 MUSL_TARGET="x86_64-unknown-linux-musl"
 NVIM_CONFIG="$HOME/.config/nvim"
 
@@ -471,23 +477,27 @@ install_uv_binary(){
 # ---------------------------- 2.2 Rust CLI 工具 -----------------------------
 # 格式：crate|binary|额外环境（none|openssl）
 RUST_TOOLS=(
-  "keifu|keifu|none"
-  "gitui|gitui|none"
-  "skim|sk|none"
-  "ducker|ducker|openssl"
-  "eza|eza|none"
-  "bat|bat|none"
-  "ripgrep|rg|none"
-  "fd-find|fd|none"
+  # 格式：crate|binary|额外环境（none|openssl）|features|version
+  "keifu|keifu|none||"
+  "gitui|gitui|none||"
+  "skim|sk|none||"
+  "ducker|ducker|openssl||"
+  "eza|eza|none||"
+  "bat|bat|none||"
+  "ripgrep|rg|none||"
+  "fd-find|fd|none||"
   # bottom 默认 deploy 包含 nvidia；NVML 只支持 glibc，故关闭 nvidia，
   # 但保留 gpu 以启用 Linux 上的 AMD/Intel GPU 监控。
-  "bottom|btm|none|battery,zfs,gpu"
-  "zoxide|zoxide|none"
+  "bottom|btm|none|battery,zfs,gpu|"
+  "zoxide|zoxide|none||"
+  "shuck-cli|shuck|none||$SHUCK_VERSION"
+  "stylua|stylua|none||$STYLUA_VERSION"
 )
 
 install_rust_tool(){
-  local crate="$1" bin="$2" kind="$3" feat="${4:-}"
-  local dest="$MUSL_BIN/$2" envs=() force=() feats=()
+  local crate="$1" bin="$2" kind="$3" feat="${4:-}" ver="${5:-}"
+  local dest="$MUSL_BIN/$2" envs=() force=() feats=() vargs=()
+  [ -n "$ver" ] && vargs=(--version "$ver")
   if [ -x "$dest" ] && [ "$FORCE_RUST_TOOLS" != "1" ]; then
     log "$bin 已存在，跳过（FORCE_RUST_TOOLS=1 重编）"
   else
@@ -499,12 +509,12 @@ install_rust_tool(){
     fi
     log "编译 $crate → $bin（musl 静态）"
     local logf=/tmp/devkit-cargo-$bin.log
-    if env "${envs[@]}" "$CARGO_HOME/bin/cargo" install "${force[@]}" "${feats[@]}" \
+    if env "${envs[@]}" "$CARGO_HOME/bin/cargo" install "${force[@]}" "${feats[@]}" "${vargs[@]}" \
          --locked --root "$MUSL_PREFIX" --target "$MUSL_TARGET" "$crate" 2>&1 | tee "$logf"; then
       :
     elif grep -qE 'no Cargo\.lock|Cargo\.lock.*not found|needs to be updated but --locked' "$logf"; then
       warn "$crate 未提供 Cargo.lock，改为不带 --locked 重试"
-      env "${envs[@]}" "$CARGO_HOME/bin/cargo" install "${force[@]}" "${feats[@]}" \
+      env "${envs[@]}" "$CARGO_HOME/bin/cargo" install "${force[@]}" "${feats[@]}" "${vargs[@]}" \
         --root "$MUSL_PREFIX" --target "$MUSL_TARGET" "$crate" || return 1
     else
       return 1
@@ -523,10 +533,10 @@ install_rust_tool(){
 rust_tools_phase(){
   step "Rust 工具（musl 静态）"
   mkdir -p "$MUSL_BIN"
-  local failed=() spec crate bin kind feat
+  local failed=() spec crate bin kind feat ver
   for spec in "${RUST_TOOLS[@]}"; do
-    IFS='|' read -r crate bin kind feat <<< "$spec"
-    if ! install_rust_tool "$crate" "$bin" "$kind" "$feat"; then
+    IFS='|' read -r crate bin kind feat ver <<< "$spec"
+    if ! install_rust_tool "$crate" "$bin" "$kind" "$feat" "$ver"; then
       warn "安装失败：$crate → $bin"
       failed+=("$crate")
     fi
@@ -621,6 +631,52 @@ install_yazi(){
   is_static "$dest_yazi" && is_static "$dest_ya" || die "yazi/ya 不是静态链接"
   runtime_ok "$dest_yazi" && runtime_ok "$dest_ya" || die "yazi/ya 运行时崩溃"
   log "yazi/ya 源码编译完成"
+}
+
+# neocmakelsp 官方只发 x86_64-unknown-linux-musl 预编译包，正好满足静态要求。
+install_neocmakelsp(){
+  local ver="$NEOCMAKELSP_VERSION" url tmpd asset src_bin
+  if [ -x "$NEOCMAKELSP_BIN" ] && [ "$FORCE_RUST_TOOLS" != "1" ] \
+     && "$NEOCMAKELSP_BIN" --version 2>/dev/null | grep -q "$ver"; then
+    log "neocmakelsp 已存在，跳过"; return 0
+  fi
+  step "neocmakelsp $ver（musl 静态）"
+  url="https://github.com/neocmakelsp/neocmakelsp/releases/download/v$ver/neocmakelsp-x86_64-unknown-linux-musl.tar.gz"
+  tmpd=$(mktemp -d) || return 1
+  asset="$tmpd/n.tgz"
+  gh_url "$url" "$asset" || { rm -rf "$tmpd"; warn "neocmakelsp 下载失败"; return 1; }
+  tar -xzf "$asset" -C "$tmpd" || { rm -rf "$tmpd"; warn "neocmakelsp 解包失败"; return 1; }
+  src_bin=$(find "$tmpd" -type f -name neocmakelsp | head -1)
+  [ -n "$src_bin" ] || { rm -rf "$tmpd"; warn "neocmakelsp 包结构异常"; return 1; }
+  mkdir -p "$MUSL_BIN"
+  install -m 0755 "$src_bin" "$NEOCMAKELSP_BIN"
+  rm -rf "$tmpd"
+  is_static "$NEOCMAKELSP_BIN" || die "neocmakelsp 不是静态链接"
+  runtime_ok "$NEOCMAKELSP_BIN" || die "neocmakelsp 运行时崩溃"
+  log "neocmakelsp → $NEOCMAKELSP_BIN"
+}
+
+# lua-language-server 官方 linux-x64 包是 glibc 二进制（最高符号 GLIBC_2.17），只验收运行。
+install_lua_ls(){
+  local ver="$LUA_LS_VERSION" url tmpd tar
+  if [ -x "$LUA_LS_PREFIX/bin/lua-language-server" ] && [ "$FORCE_RUST_TOOLS" != "1" ] \
+     && "$LUA_LS_PREFIX/bin/lua-language-server" --version 2>/dev/null | grep -qx "$ver"; then
+    log "lua-language-server 已存在，跳过"; return 0
+  fi
+  step "lua-language-server $ver（官方 linux-x64）"
+  url="https://github.com/LuaLS/lua-language-server/releases/download/$ver/lua-language-server-$ver-linux-x64.tar.gz"
+  tmpd=$(mktemp -d) || return 1
+  tar="$tmpd/lua-ls.tar.gz"
+  gh_url "$url" "$tar" || { rm -rf "$tmpd"; warn "lua-language-server 下载失败"; return 1; }
+  mkdir -p "$tmpd/x"
+  tar -xzf "$tar" -C "$tmpd/x" || { rm -rf "$tmpd"; warn "lua-language-server 解包失败"; return 1; }
+  [ -x "$tmpd/x/bin/lua-language-server" ] || { rm -rf "$tmpd"; warn "lua-language-server 包结构异常"; return 1; }
+  rm -rf "$LUA_LS_PREFIX"
+  mkdir -p "$(dirname "$LUA_LS_PREFIX")"
+  mv "$tmpd/x" "$LUA_LS_PREFIX"
+  rm -rf "$tmpd"
+  runtime_ok "$LUA_LS_PREFIX/bin/lua-language-server" || die "lua-language-server 运行时崩溃"
+  log "lua-language-server → $LUA_LS_PREFIX"
 }
 
 # ---------------------------- 2.4 tree-sitter CLI（供 Neovim 用） ----------
@@ -1305,7 +1361,7 @@ bashrc_phase(){
 # python-bin 故意不加入 PATH：每个工具通过 shim 使用自己的 venv。
 if [ -d "$HOME/.devkit" ]; then
   case ":$PATH:" in *":$HOME/.devkit/shims:"*) ;; *)
-    export PATH="$HOME/.devkit/shims:$HOME/.devkit/musl/bin:$HOME/.devkit/node/bin:$HOME/.devkit/npm-global/bin:$HOME/.devkit/uv-tool-bin:$HOME/.devkit/cargo/bin:$PATH" ;;
+    export PATH="$HOME/.devkit/shims:$HOME/.devkit/musl/bin:$HOME/.devkit/node/bin:$HOME/.devkit/npm-global/bin:$HOME/.devkit/uv-tool-bin:$HOME/.devkit/cargo/bin:$HOME/.devkit/lua-ls/bin:$PATH" ;;
   esac
   # clangd 只依赖系统 glibc（2.18+）；放在 nvim 的 PATH 之后、系统 PATH 之前，
   # 这样 Neovim 的 C/C++ LSP 与命令行都用 devkit 这一份。
@@ -1357,10 +1413,10 @@ EOF
 # ---------------------------- 8.1 验收 -------------------------------------
 verify_phase(){
   step "验收"
-  export PATH="$UV_TOOL_BIN_DIR:$SHIM_DIR:$MUSL_BIN:$CLANG_TOOLS_BIN:$GIT_PREFIX/bin:$NVIM_PREFIX/bin:$NODE_PREFIX/bin:$NPM_PREFIX/bin:$CARGO_HOME/bin:$PATH"
+  export PATH="$UV_TOOL_BIN_DIR:$SHIM_DIR:$MUSL_BIN:$CLANG_TOOLS_BIN:$GIT_PREFIX/bin:$LUA_LS_PREFIX/bin:$NVIM_PREFIX/bin:$NODE_PREFIX/bin:$NPM_PREFIX/bin:$CARGO_HOME/bin:$PATH"
   local bin p v static_ok=0 static_bad=0 other_bad=0
   printf '\n%-10s %-8s %-52s %s\n' 工具 类型 路径 版本
-  for bin in keifu yazi ya gitui sk ducker eza bat rg fd btm zoxide uv uvx; do
+  for bin in keifu yazi ya gitui sk ducker eza bat rg fd btm zoxide uv uvx shuck stylua neocmakelsp; do
     p=$(command -v "$bin" 2>/dev/null || true)
     if [ -n "$p" ]; then
       v=$("$p" --version 2>/dev/null | head -1 || echo '?')
@@ -1379,7 +1435,7 @@ verify_phase(){
     if [ -x "$SHIM_DIR/opencode" ]; then other_bins="$SHIM_DIR/opencode $other_bins"
     else other_bins="$NPM_PREFIX/bin/opencode $other_bins"; fi
   fi
-  other_bins="nvim clangd git $other_bins"
+  other_bins="nvim clangd git lua-language-server $other_bins"
   for bin in $other_bins; do
     p=$(command -v "$bin" 2>/dev/null || true)
     if [ -n "$p" ]; then
@@ -1450,6 +1506,8 @@ main(){
   rust_tools_phase
   step "yazi / ya"
   install_yazi || die "yazi/ya 安装失败"
+  install_neocmakelsp || warn "neocmakelsp 安装失败（CMake LSP 不可用）"
+  install_lua_ls || warn "lua-language-server 安装失败（Lua LSP 不可用）"
   ts_cli_phase
   # C/C++ 工具要在 Neovim 之前就位（LazyVim 的 clangd 扩展依赖它们），
   # 静态 git 也让后续 GitHub 克隆更稳。
