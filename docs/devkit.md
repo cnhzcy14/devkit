@@ -157,7 +157,7 @@ SKIP_APT=1 bash /home/$USER/work/project/devkit/setup-ubuntu.sh
 | | 2.2 | `keifu` `gitui` `sk` `ducker` `eza` `bat` `rg` `fd` `btm` `zoxide` `uv`/`uvx` |
 | | 2.3 | `yazi` / `ya`（GitHub musl 预编译包优先，失败源码编译） |
 | | 2.4 | `tree-sitter` CLI（musl 静态 + wrapper，供 Neovim 编译 parser） |
-| | 2.5 | `shuck`（替代 shfmt）、`stylua`（cargo 源码编译，musl 静态） |
+| | 2.5 | `shuck`（替代 shfmt，cargo 源码编译，musl 静态） |
 | | 2.6 | `neocmakelsp`（Rust 编写，官方 musl 包）、`emmylua_ls`（EmmyLua Analyzer Rust，官方 musl 静态包，替代原 lua-language-server） |
 | 3. C/C++ 工具 | 3.1 | `clangd`（官方包，libstdc++ 静态 / glibc 2.18+）→ `~/.devkit/clang/bin`；LSP、内置 clang-format / clang-tidy |
 | | 3.2 | 静态 `git` 2.56.x（源码编译，自带 HTTPS/libcurl）→ `~/.devkit/git/bin` |
@@ -189,7 +189,6 @@ SKIP_APT=1 bash /home/$USER/work/project/devkit/setup-ubuntu.sh
 | `btm`（bottom） | `bottom`（`battery,zfs,gpu`：支持 Linux 上的 AMD/Intel GPU；关闭 `nvidia`，因为 NVML 仅支持 glibc） |
 | `zoxide` | `zoxide` |
 | `shuck` | `shuck-cli`（替代 shfmt，Shell 格式化/语法检查） |
-| `stylua` | `stylua`（Lua 格式化） |
 | `uv` / `uvx` | 官方 musl 静态预编译包；同时用于管理 Python |
 
 编译参数：`--target x86_64-unknown-linux-musl` + `target-feature=+crt-static`。
@@ -267,8 +266,8 @@ Mason 由脚本自动关闭，见下一节。
 - **Lua LSP 改用 `emmylua_ls`**：显式关闭 LazyVim 默认的 `lua_ls`，配置
   `emmylua_ls` 的 `runtime.version = "LuaJIT"`、`vim` 全局和 `VIMRUNTIME` /
   lazy 插件目录作为 library；
-- Shell 格式化从默认的 `shfmt` 改为 `shuck`；Lua 继续用 LazyVim 默认的 `stylua`
-  （devkit 已提供）；
+- Shell 格式化从默认的 `shfmt` 改为 `shuck`；Lua 清空 LazyVim 默认的 `stylua`
+  （conform 里 `lua = {}`），改由 `emmylua_ls` 内置格式化经 LSP fallback 完成；
 - `vim.g.lazyvim_python_lsp = "basedpyright"`。
 
 Lazy sync 成功后脚本还会补装 extras 需要的 Treesitter parser：
@@ -331,8 +330,9 @@ return {
   {
     "stevearc/conform.nvim",
     opts = {
-      -- C/C++ 不配 formatter，保存时走 clangd 内置 clang-format（LSP fallback）
-      formatters_by_ft = { sh = { "shuck" } },
+      -- 不配外部 formatter，保存时走 LSP fallback：
+      -- C/C++ 用 clangd 内置 clang-format，Lua 用 emmylua_ls 内置格式化。
+      formatters_by_ft = { lua = {}, sh = { "shuck" } },
       formatters = {
         shuck = {
           command = "shuck",
@@ -355,9 +355,12 @@ return {
 | Python LSP | `basedpyright` | `~/.devkit/uv-tool-bin` |
 | Python lint/format | `ruff` | 同上 |
 | Lua LSP | `emmylua_ls`（EmmyLua Analyzer Rust） | `~/.devkit/musl/bin` |
-| Lua 格式化 | `stylua` | `~/.devkit/musl/bin` |
+| Lua 格式化 | `emmylua_ls` 内置格式化（LSP fallback） | `~/.devkit/musl/bin` |
 | Shell 格式化 | `shuck`（替代 `shfmt`） | 同上 |
 | Treesitter parser | `tree-sitter` CLI | 同上 |
+
+本项目不再安装 `stylua`：托管 LazyVim 配置已清空它作为 Lua formatter，Lua 格式化
+统一由 `emmylua_ls` 内置完成。
 
 需要留意：
 
@@ -435,7 +438,6 @@ DRY_RUN=1 bash /home/$USER/work/project/devkit/devkit-cleanup.sh
 | `UPDATE_TS_PARSERS` | `0` | `1` 安装/更新 LazyVim ensure_installed 的 parser |
 | `TS_CLI_VERSION` | `0.27.2` | tree-sitter CLI 版本，必须 >=0.26.1 |
 | `SHUCK_VERSION` | `0.2.11` | shuck-cli 版本（musl 静态） |
-| `STYLUA_VERSION` | `2.6.0` | stylua 版本（musl 静态） |
 | `NEOCMAKELSP_VERSION` | `0.12.0` | neocmakelsp 版本（官方 musl 包） |
 | `EMMYLUA_VERSION` | `0.25.1` | emmylua_ls / EmmyLua Analyzer Rust 版本（官方 musl 静态包） |
 | `FORCE_RUST_TOOLS` | `0` | 强制重编 Rust 工具，并重装 neocmakelsp/emmylua_ls |

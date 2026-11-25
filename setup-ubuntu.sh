@@ -53,7 +53,6 @@
 #   HUNK_VERSION=0.24.0    hunk 版本（0.24.1 的 linux 包尚未同步到 npmmirror）
 #   YAZI_VERSION=...       yazi 版本（默认从 rsproxy 解析最新）
 #   SHUCK_VERSION=...      shuck-cli 版本（默认 0.2.11）
-#   STYLUA_VERSION=...     stylua 版本（默认 2.6.0）
 #   NEOCMAKELSP_VERSION=... neocmakelsp 版本（默认 0.12.0）
 #   EMMYLUA_VERSION=...    emmylua_ls（EmmyLua Analyzer Rust）版本（默认 0.25.1）
 #   GIT_VERSION=...        静态 git 版本（默认从 kernel.org 解析最新）
@@ -84,7 +83,6 @@ CLANGD_VERSION="${CLANGD_VERSION:-22.1.6}"
 FORCE_CLANG="${FORCE_CLANG:-0}"
 FORCE_GIT="${FORCE_GIT:-0}"
 SHUCK_VERSION="${SHUCK_VERSION:-0.2.11}"
-STYLUA_VERSION="${STYLUA_VERSION:-2.6.0}"
 NEOCMAKELSP_VERSION="${NEOCMAKELSP_VERSION:-0.12.0}"
 EMMYLUA_VERSION="${EMMYLUA_VERSION:-0.25.1}"
 PYTHON_VERSION="${PYTHON_VERSION:-3.12}"
@@ -491,7 +489,6 @@ RUST_TOOLS=(
   "bottom|btm|none|battery,zfs,gpu|"
   "zoxide|zoxide|none||"
   "shuck-cli|shuck|none||$SHUCK_VERSION"
-  "stylua|stylua|none||$STYLUA_VERSION"
 )
 
 install_rust_tool(){
@@ -970,7 +967,7 @@ use_glibc_cc_for_nvim(){
 }
 
 # 托管 LazyVim 配置：只对带 .devkit-managed 的配置写入，重跑幂等覆盖。
-# 关闭 Mason，改用 devkit 提供的 clangd / basedpyright / emmylua_ls / shuck / stylua 等。
+# 关闭 Mason，改用 devkit 提供的 clangd / basedpyright / emmylua_ls / shuck 等；Lua 格式化也走 emmylua_ls。
 write_lazyvim_devkit_config(){
   local plugin_dir="$NVIM_CONFIG/lua/plugins"
   local opts_file="$NVIM_CONFIG/lua/config/options.lua"
@@ -1028,9 +1025,11 @@ return {
   {
     "stevearc/conform.nvim",
     opts = {
-      -- C/C++ 不配 formatter：LazyVim 默认 lsp_format = "fallback"，
-      -- 保存时由 clangd 的内置 clang-format 完成格式化。
+      -- 不配外部 formatter：LazyVim 默认 lsp_format = "fallback"，
+      -- C/C++ 由 clangd 内置 clang-format、Lua 由 emmylua_ls 内置格式化完成。
       formatters_by_ft = {
+        -- 清掉 LazyVim 默认的 stylua，让 Lua 走 emmylua_ls 的 LSP 格式化。
+        lua = {},
         sh = { "shuck" },
       },
       formatters = {
@@ -1532,7 +1531,7 @@ verify_phase(){
   export PATH="$UV_TOOL_BIN_DIR:$SHIM_DIR:$MUSL_BIN:$CLANG_TOOLS_BIN:$GIT_PREFIX/bin:$NVIM_PREFIX/bin:$NODE_PREFIX/bin:$NPM_PREFIX/bin:$CARGO_HOME/bin:$PATH"
   local bin p v static_ok=0 static_bad=0 other_bad=0
   printf '\n%-10s %-8s %-52s %s\n' 工具 类型 路径 版本
-  for bin in keifu yazi ya gitui sk ducker eza bat rg fd btm zoxide uv uvx shuck stylua neocmakelsp emmylua_ls; do
+  for bin in keifu yazi ya gitui sk ducker eza bat rg fd btm zoxide uv uvx shuck neocmakelsp emmylua_ls; do
     p=$(command -v "$bin" 2>/dev/null || true)
     if [ -n "$p" ]; then
       v=$("$p" --version 2>/dev/null | head -1 || echo '?')

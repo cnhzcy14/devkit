@@ -6,6 +6,10 @@
 > 装到 `~/.devkit/musl/bin`，替代 `lua-language-server`；LazyVim 托管配置显式关闭
 > `lua_ls` 并启用 `emmylua_ls`。旧的 `~/.devkit/lua-ls` 会在重跑安装时自动清理。
 >
+> 2026-11-25 变更：Lua 格式化改由 `emmylua_ls` 内置格式化完成（conform 里
+> `lua = {}` 清掉默认 `stylua`，走 `lsp_format = "fallback"`）；安装脚本不再装
+> `stylua`，相关版本变量与验收项一并移除。
+>
 > 2026-11-24 验证：ubuntu:20.04 容器 `ye_cheng_0d2bf85e`（用户 `ye_cheng`）完整安装
 > 通过（退出码 0）：
 > - C/C++：`clangd 22.1.6`（LSP + 内置 clang-format/clang-tidy；`clang/bin` 仅此一个），
@@ -160,7 +164,7 @@ nvim        NVIM v0.12.6（最新 tag 源码编译，Release，glibc 2.31 基线
 - 禁用 `mason.nvim` / `mason-lspconfig.nvim`（两种 org 名），
   `spec.plugins["mason.nvim"] == nil`；
 - 导入 `lang.clangd` / `lang.cmake` / `lang.python` extras；
-- Shell formatter 改为 `shuck`，Lua 仍用 `stylua`；
+- Shell formatter 改为 `shuck`，Lua 改用 `emmylua_ls` 内置格式化（`lua = {}` 走 LSP fallback）；
 - `lua/config/options.lua` 写入 `vim.g.lazyvim_python_lsp = "basedpyright"`；
 - Lazy sync 后补装 `cpp/cmake/ninja/rst` parser（实测 4/4 安装成功）。
 
