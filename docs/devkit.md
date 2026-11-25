@@ -26,10 +26,9 @@ Ubuntu 容器内运行；宿主机只负责启动容器，不直接运行安装�
 
 ```text
 ~/.devkit/
-├── musl/bin/       musl 静态 Rust 工具（含 uv/uvx）+ tree-sitter CLI/wrapper
+├── musl/bin/       musl 静态 Rust 工具（含 uv/uvx、neocmakelsp、emmylua_ls）+ tree-sitter CLI/wrapper
 ├── clang/bin/      clangd（LSP + 内置 clang-format / clang-tidy，glibc 2.18+）
 ├── git/bin/        静态编译的 git（自带 HTTPS），优先于系统 git
-├── lua-ls/bin/     lua-language-server（官方 glibc 包，Lua LSP）
 ├── python-bin/     uv 安装的 Python 3.12 可执行文件（不加入全局 PATH）
 ├── venvs/          Trellis/opencode 各自的 Python venv
 ├── shims/          只为工具进程注入私有 PATH 的 trellis/tl/opencode shim
@@ -144,7 +143,7 @@ SKIP_APT=1 bash /home/$USER/work/project/devkit/setup-ubuntu.sh
 > 运行；宿主机只负责 `docker run` / `devkit-up.sh`。
 
 安装脚本按章节从上到下执行：
-预检/apt → Rust → Neovim → Node/TS-JS → Python → `.bashrc` → 验收/清理。
+预检/apt → Rust → C/C++（clangd、静态 git）→ `.bashrc` → Neovim/LazyVim → Node/TS-JS → Python → 验收/清理。
 重跑是幂等的，已装好的工具会自动跳过。
 
 ## 安装内容
@@ -159,11 +158,11 @@ SKIP_APT=1 bash /home/$USER/work/project/devkit/setup-ubuntu.sh
 | | 2.3 | `yazi` / `ya`（GitHub musl 预编译包优先，失败源码编译） |
 | | 2.4 | `tree-sitter` CLI（musl 静态 + wrapper，供 Neovim 编译 parser） |
 | | 2.5 | `shuck`（替代 shfmt）、`stylua`（cargo 源码编译，musl 静态） |
-| | 2.6 | `neocmakelsp`（官方 musl 包）、`lua-language-server`（官方 linux-x64，glibc 2.17+） |
+| | 2.6 | `neocmakelsp`（Rust 编写，官方 musl 包）、`emmylua_ls`（EmmyLua Analyzer Rust，官方 musl 静态包，替代原 lua-language-server） |
 | 3. C/C++ 工具 | 3.1 | `clangd`（官方包，libstdc++ 静态 / glibc 2.18+）→ `~/.devkit/clang/bin`；LSP、内置 clang-format / clang-tidy |
 | | 3.2 | 静态 `git` 2.56.x（源码编译，自带 HTTPS/libcurl）→ `~/.devkit/git/bin` |
 | 4. Neovim / LazyVim / Treesitter | 4.1 | Neovim 最新 tag 源码编译 → `~/.devkit/nvim` |
-| | 4.2 | LazyVim starter → `~/.config/nvim`，headless `Lazy! sync` 装插件（nvim-treesitter 随后会按其清单从 GitHub 拉语法并编译基础 parser）；托管配置写入 `lua/plugins/devkit.lua`（关 Mason、clangd/cmake/python extras、shuck）与 `options.lua`（basedpyright） |
+| | 4.2 | LazyVim starter → `~/.config/nvim`，headless `Lazy! sync` 装插件（nvim-treesitter 随后会按其清单从 GitHub 拉语法并编译基础 parser）；托管配置写入 `lua/plugins/devkit.lua`（关 Mason、clangd/cmake/python extras、关闭 lua_ls 并启用 emmylua_ls、shuck）与 `options.lua`（basedpyright） |
 | | 4.3 | `UPDATE_TS_PARSERS=1` 时按 LazyVim 列表更新 Treesitter parser；托管配置另补装 `cpp/cmake/ninja/rst`，均强制 glibc 编译 |
 | 5. Node.js 与 TS/JS 工具 | 5.1 | Node.js 22 LTS → `~/.devkit/node` |
 | | 5.2 | `hunk`(hunkdiff)、`trellis`、`opencode` → `~/.devkit/npm-global` |
@@ -198,10 +197,10 @@ Rust 现代 musl 默认产出 **static-PIE**：`file` 可能显示 `dynamically 
 但 `readelf -l` 没有 `INTERP` 段、`ldd` 显示 `statically linked`，脚本按
 `PT_INTERP` 判定是否为静态，不满足会直接报错。
 
-编辑器相关的非 Rust 组件：
+编辑器相关的 LSP 工具（均为 Rust 编写、musl 静态包）：
 
-- `neocmakelsp`：官方 `x86_64-unknown-linux-musl` 预编译包，落 `~/.devkit/musl/bin`；
-- `lua-language-server`：官方 `linux-x64` 包（glibc 2.17+），落 `~/.devkit/lua-ls`。
+- `neocmakelsp`：Rust 编写，官方只发 `x86_64-unknown-linux-musl` 预编译包，落 `~/.devkit/musl/bin`；
+- `emmylua_ls`：Rust 编写的 EmmyLua Analyzer Rust（仓库 `EmmyLuaLs/emmylua-analyzer-rust`），官方提供 `x86_64-unknown-linux-musl` 静态包，同样落 `~/.devkit/musl/bin`。它是本项目默认的 Lua LSP，取代原来的 `lua-language-server`（glibc 包，`lua-ls/` 目录不再创建）。
 
 ### C/C++ 工具（clangd、git）
 
@@ -265,6 +264,9 @@ Mason 由脚本自动关闭，见下一节。
 - 禁用两种 org 名的 `mason.nvim` / `mason-lspconfig.nvim`；
 - 去掉 `conform.nvim` 对 `mason.nvim` 的依赖；
 - 导入 `lang.clangd`、`lang.cmake`、`lang.python` 三个 extras；
+- **Lua LSP 改用 `emmylua_ls`**：显式关闭 LazyVim 默认的 `lua_ls`，配置
+  `emmylua_ls` 的 `runtime.version = "LuaJIT"`、`vim` 全局和 `VIMRUNTIME` /
+  lazy 插件目录作为 library；
 - Shell 格式化从默认的 `shfmt` 改为 `shuck`；Lua 继续用 LazyVim 默认的 `stylua`
   （devkit 已提供）；
 - `vim.g.lazyvim_python_lsp = "basedpyright"`。
@@ -289,6 +291,42 @@ return {
   { import = "lazyvim.plugins.extras.lang.clangd" },
   { import = "lazyvim.plugins.extras.lang.cmake" },
   { import = "lazyvim.plugins.extras.lang.python" },
+
+  -- Lua LSP：关闭 lua_ls，改用 devkit 提供的 EmmyLua Analyzer Rust
+  {
+    "neovim/nvim-lspconfig",
+    opts = {
+      servers = {
+        lua_ls = { enabled = false },
+        emmylua_ls = {
+          on_init = function(client)
+            -- 项目自带 .emmyrc.json / .luarc.json 时交给项目配置
+            if client.workspace_folders then
+              local path = client.workspace_folders[1].name
+              if
+                path ~= vim.fn.stdpath("config")
+                and (vim.uv.fs_stat(path .. "/.emmyrc.json") or vim.uv.fs_stat(path .. "/.luarc.json"))
+              then
+                client.config.settings = {}
+              end
+            end
+          end,
+          settings = {
+            emmylua = {
+              runtime = { version = "LuaJIT" },
+              diagnostics = { globals = { "vim" } },
+              workspace = {
+                library = {
+                  vim.env.VIMRUNTIME,
+                  vim.fn.stdpath("data") .. "/lazy",
+                },
+              },
+            },
+          },
+        },
+      },
+    },
+  },
 
   {
     "stevearc/conform.nvim",
@@ -316,7 +354,7 @@ return {
 | CMake LSP | `neocmakelsp` | `~/.devkit/musl/bin` |
 | Python LSP | `basedpyright` | `~/.devkit/uv-tool-bin` |
 | Python lint/format | `ruff` | 同上 |
-| Lua LSP | `lua-language-server` | `~/.devkit/lua-ls/bin` |
+| Lua LSP | `emmylua_ls`（EmmyLua Analyzer Rust） | `~/.devkit/musl/bin` |
 | Lua 格式化 | `stylua` | `~/.devkit/musl/bin` |
 | Shell 格式化 | `shuck`（替代 `shfmt`） | 同上 |
 | Treesitter parser | `tree-sitter` CLI | 同上 |
@@ -399,8 +437,8 @@ DRY_RUN=1 bash /home/$USER/work/project/devkit/devkit-cleanup.sh
 | `SHUCK_VERSION` | `0.2.11` | shuck-cli 版本（musl 静态） |
 | `STYLUA_VERSION` | `2.6.0` | stylua 版本（musl 静态） |
 | `NEOCMAKELSP_VERSION` | `0.12.0` | neocmakelsp 版本（官方 musl 包） |
-| `LUA_LS_VERSION` | `3.19.2` | lua-language-server 版本（官方 linux-x64） |
-| `FORCE_RUST_TOOLS` | `0` | 强制重编 Rust 工具，并重装 neocmakelsp/lua-language-server |
+| `EMMYLUA_VERSION` | `0.25.1` | emmylua_ls / EmmyLua Analyzer Rust 版本（官方 musl 静态包） |
+| `FORCE_RUST_TOOLS` | `0` | 强制重编 Rust 工具，并重装 neocmakelsp/emmylua_ls |
 | `FORCE_LAZYVIM` | `0` | 备份旧配置并重建 LazyVim |
 | `WITH_OPENCODE` | `1` | 通过 npm 安装 opencode；设 `0` 跳过 |
 | `OPENCODE_VERSION` | `latest` | opencode 版本（npm 包 `@opencode/cli`） |

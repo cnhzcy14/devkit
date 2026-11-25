@@ -1,6 +1,10 @@
 # 交接说明：当前状态与下一步（Neovim / LazyVim）
 
-> 最后更新：2026-11-24（新增 C/C++ 与编辑器工具链；LazyVim 自动关闭 Mason）
+> 最后更新：2026-11-25（Lua LSP 从 lua-language-server 切换为 EmmyLua Analyzer Rust / emmylua_ls）
+>
+> 2026-11-25 变更：`emmylua_ls 0.25.1`（官方 `x86_64-unknown-linux-musl` 静态包）
+> 装到 `~/.devkit/musl/bin`，替代 `lua-language-server`；LazyVim 托管配置显式关闭
+> `lua_ls` 并启用 `emmylua_ls`。旧的 `~/.devkit/lua-ls` 会在重跑安装时自动清理。
 >
 > 2026-11-24 验证：ubuntu:20.04 容器 `ye_cheng_0d2bf85e`（用户 `ye_cheng`）完整安装
 > 通过（退出码 0）：
@@ -8,7 +12,7 @@
 >   静态 `git 2.56.1`（自编精简 libcurl 8.17.0 + 系统 OpenSSL，含 `git-remote-https`，
 >   实跑 `git clone https://github.com/git/git.git` 成功）；
 > - 编辑器：`shuck 0.2.11` / `stylua 2.6.0` / `neocmakelsp 0.12.0` 均 musl 静态；
->   `lua-language-server 3.19.2`（官方 glibc 包）可运行；
+>   Lua LSP 原为 `lua-language-server 3.19.2`（2026-11-25 已切换为 `emmylua_ls`）；
 > - Rust 静态工具 17/17 通过，其他工具缺失 0；
 > - LazyVim 托管配置：`spec.plugins["mason.nvim"] == nil`，
 >   `vim.g.lazyvim_python_lsp = "basedpyright"`，clangd/cmake/python extras 生效，
@@ -47,6 +51,7 @@
 - 2026-11-24 系列提交内容：C/C++ 章节（只装 clangd + 静态 git）、
   shuck/stylua/neocmakelsp/lua-language-server、LazyVim 托管配置（自动关 Mason）、
   文档与交接更新
+- 2026-11-25：Lua LSP 改用 `emmylua_ls`，相关脚本、LazyVim 配置与文档同步更新
 - 是否已推送以 `git status -sb` 为准
 - 文件：
   - `setup-ubuntu.sh`
@@ -98,8 +103,8 @@ uv / uvx 0.13.9
 ```text
 clangd              22.1.6   ~/.devkit/clang/bin（仅此一个文件）
 git                 2.56.1   ~/.devkit/git/bin（静态，含 git-remote-https）
-neocmakelsp         0.12.0   ~/.devkit/musl/bin（musl 静态）
-lua-language-server 3.19.2   ~/.devkit/lua-ls/bin（官方 glibc 包）
+neocmakelsp         0.12.0   ~/.devkit/musl/bin（Rust 编写，musl 静态）
+emmylua_ls          0.25.1   ~/.devkit/musl/bin（EmmyLua Analyzer Rust，musl 静态）
 ```
 
 - clangd 同时提供 LSP、内置 clang-format 格式化与 `--clang-tidy` 诊断；未安装独立的
@@ -108,7 +113,8 @@ lua-language-server 3.19.2   ~/.devkit/lua-ls/bin（官方 glibc 包）
   实跑 `git clone https://github.com/git/git.git` 成功。
 - 静态 libcurl 版本按宿主 OpenSSL 自动选择：curl 8.18+ 要求 OpenSSL 3.0，
   20.04/22.04 的 1.1.1 宿主封顶 `8.17.0`（`CURL_VERSION` 可覆盖）。
-- `lua-language-server` 是 glibc 二进制（最高符号 GLIBC_2.17），只做运行验收。
+- `neocmakelsp` 是 Rust 编写的 CMake LSP；`emmylua_ls` 是 Rust 编写的 Lua LSP
+  （EmmyLua Analyzer Rust），两者都是官方 musl 静态包。
 
 ### Node / npm 工具
 

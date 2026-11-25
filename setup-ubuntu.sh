@@ -13,7 +13,7 @@
 #
 # 章节结构（函数按章节组织，实际执行顺序见文件末尾 main）：
 #   1 预检与系统依赖
-#   2 Rust 工具链与 CLI（musl 静态；含 uv、tree-sitter CLI、yazi）
+#   2 Rust 工具链与 CLI（musl 静态；含 uv、tree-sitter CLI、yazi、neocmakelsp、emmylua_ls）
 #   3 C/C++ 工具（clangd、静态 git）
 #   4 Neovim / LazyVim / Treesitter
 #   5 Node.js 与 TS/JS 工具（hunk / Trellis / opencode）
@@ -23,9 +23,9 @@
 #
 # 运行方式（ubuntu:20.04 默认无 sudo，推荐分两步）：
 #   1) root 装系统依赖：
-#      APT_ONLY=1 bash /home/$USER/dev_dockerfiles/setup-ubuntu.sh
+#      APT_ONLY=1 bash /home/$USER/work/project/devkit/setup-ubuntu.sh
 #   2) 同名普通用户装 home 制品：
-#      su - $USER -c 'SKIP_APT=1 bash /home/$USER/dev_dockerfiles/setup-ubuntu.sh'
+#      su - $USER -c 'SKIP_APT=1 bash /home/$USER/work/project/devkit/setup-ubuntu.sh'
 #   或直接使用宿主机侧 devkit-up.sh --setup 一键完成。
 #
 # 常用开关：
@@ -55,7 +55,7 @@
 #   SHUCK_VERSION=...      shuck-cli 版本（默认 0.2.11）
 #   STYLUA_VERSION=...     stylua 版本（默认 2.6.0）
 #   NEOCMAKELSP_VERSION=... neocmakelsp 版本（默认 0.12.0）
-#   LUA_LS_VERSION=...     lua-language-server 版本（默认 3.19.2）
+#   EMMYLUA_VERSION=...    emmylua_ls（EmmyLua Analyzer Rust）版本（默认 0.25.1）
 #   GIT_VERSION=...        静态 git 版本（默认从 kernel.org 解析最新）
 #   CURL_VERSION=...       静态 libcurl 版本（默认自动；OpenSSL 1.1.1 封顶 8.17.0）
 #   CLANGD_VERSION=...     clangd 版本（默认 22.1.6；置空则解析最新 release）
@@ -86,7 +86,7 @@ FORCE_GIT="${FORCE_GIT:-0}"
 SHUCK_VERSION="${SHUCK_VERSION:-0.2.11}"
 STYLUA_VERSION="${STYLUA_VERSION:-2.6.0}"
 NEOCMAKELSP_VERSION="${NEOCMAKELSP_VERSION:-0.12.0}"
-LUA_LS_VERSION="${LUA_LS_VERSION:-3.19.2}"
+EMMYLUA_VERSION="${EMMYLUA_VERSION:-0.25.1}"
 PYTHON_VERSION="${PYTHON_VERSION:-3.12}"
 DEVKIT_ROOT="${DEVKIT_ROOT:-$HOME/.devkit}"
 APT_MIRROR="${APT_MIRROR:-}"
@@ -129,8 +129,8 @@ SHIM_DIR="$DEVKIT_ROOT/shims"
 OPENSSL_MUSL="$DEVKIT_ROOT/openssl-musl"
 CLANG_PREFIX="$DEVKIT_ROOT/clang"
 GIT_PREFIX="$DEVKIT_ROOT/git"
-LUA_LS_PREFIX="$DEVKIT_ROOT/lua-ls"
 NEOCMAKELSP_BIN="$MUSL_BIN/neocmakelsp"
+EMMYLUA_BIN="$MUSL_BIN/emmylua_ls"
 MUSL_TARGET="x86_64-unknown-linux-musl"
 NVIM_CONFIG="$HOME/.config/nvim"
 
@@ -656,27 +656,28 @@ install_neocmakelsp(){
   log "neocmakelsp → $NEOCMAKELSP_BIN"
 }
 
-# lua-language-server 官方 linux-x64 包是 glibc 二进制（最高符号 GLIBC_2.17），只验收运行。
-install_lua_ls(){
-  local ver="$LUA_LS_VERSION" url tmpd tar
-  if [ -x "$LUA_LS_PREFIX/bin/lua-language-server" ] && [ "$FORCE_RUST_TOOLS" != "1" ] \
-     && "$LUA_LS_PREFIX/bin/lua-language-server" --version 2>/dev/null | grep -qx "$ver"; then
-    log "lua-language-server 已存在，跳过"; return 0
+# EmmyLua Analyzer Rust（emmylua_ls）官方提供 x86_64-unknown-linux-musl 静态包，
+# 正好满足 devkit 的“Lua LSP 也用 Rust musl 静态”原则，替代原来的 lua-language-server。
+install_emmylua(){
+  local ver="${EMMYLUA_VERSION#v}" url tmpd tar src_bin
+  if [ -x "$EMMYLUA_BIN" ] && [ "$FORCE_RUST_TOOLS" != "1" ] \
+     && "$EMMYLUA_BIN" --version 2>/dev/null | grep -q "$ver"; then
+    log "emmylua_ls 已存在，跳过"; return 0
   fi
-  step "lua-language-server $ver（官方 linux-x64）"
-  url="https://github.com/LuaLS/lua-language-server/releases/download/$ver/lua-language-server-$ver-linux-x64.tar.gz"
+  step "emmylua_ls $ver（EmmyLua Analyzer Rust，musl 静态）"
+  url="https://github.com/EmmyLuaLs/emmylua-analyzer-rust/releases/download/$ver/emmylua_ls-linux-musl.tar.gz"
   tmpd=$(mktemp -d) || return 1
-  tar="$tmpd/lua-ls.tar.gz"
-  gh_url "$url" "$tar" || { rm -rf "$tmpd"; warn "lua-language-server 下载失败"; return 1; }
-  mkdir -p "$tmpd/x"
-  tar -xzf "$tar" -C "$tmpd/x" || { rm -rf "$tmpd"; warn "lua-language-server 解包失败"; return 1; }
-  [ -x "$tmpd/x/bin/lua-language-server" ] || { rm -rf "$tmpd"; warn "lua-language-server 包结构异常"; return 1; }
-  rm -rf "$LUA_LS_PREFIX"
-  mkdir -p "$(dirname "$LUA_LS_PREFIX")"
-  mv "$tmpd/x" "$LUA_LS_PREFIX"
+  tar="$tmpd/e.tgz"
+  gh_url "$url" "$tar" || { rm -rf "$tmpd"; warn "emmylua_ls 下载失败"; return 1; }
+  tar -xzf "$tar" -C "$tmpd" || { rm -rf "$tmpd"; warn "emmylua_ls 解包失败"; return 1; }
+  src_bin=$(find "$tmpd" -type f -name emmylua_ls | head -1)
+  [ -n "$src_bin" ] || { rm -rf "$tmpd"; warn "emmylua_ls 包结构异常"; return 1; }
+  mkdir -p "$MUSL_BIN"
+  install -m 0755 "$src_bin" "$EMMYLUA_BIN"
   rm -rf "$tmpd"
-  runtime_ok "$LUA_LS_PREFIX/bin/lua-language-server" || die "lua-language-server 运行时崩溃"
-  log "lua-language-server → $LUA_LS_PREFIX"
+  is_static "$EMMYLUA_BIN" || die "emmylua_ls 不是静态链接"
+  runtime_ok "$EMMYLUA_BIN" || die "emmylua_ls 运行时崩溃"
+  log "emmylua_ls → $EMMYLUA_BIN"
 }
 
 # ---------------------------- 2.4 tree-sitter CLI（供 Neovim 用） ----------
@@ -969,7 +970,7 @@ use_glibc_cc_for_nvim(){
 }
 
 # 托管 LazyVim 配置：只对带 .devkit-managed 的配置写入，重跑幂等覆盖。
-# 关闭 Mason，改用 devkit 提供的 clangd / basedpyright / shuck / stylua 等。
+# 关闭 Mason，改用 devkit 提供的 clangd / basedpyright / emmylua_ls / shuck / stylua 等。
 write_lazyvim_devkit_config(){
   local plugin_dir="$NVIM_CONFIG/lua/plugins"
   local opts_file="$NVIM_CONFIG/lua/config/options.lua"
@@ -987,6 +988,42 @@ return {
   { import = "lazyvim.plugins.extras.lang.clangd" },
   { import = "lazyvim.plugins.extras.lang.cmake" },
   { import = "lazyvim.plugins.extras.lang.python" },
+
+  {
+    -- Lua LSP：用 EmmyLua Analyzer Rust（emmylua_ls）替代 lua-language-server。
+    -- LazyVim 自带 lua_ls 配置，这里显式关闭，避免两个 Lua LSP 同时启动。
+    "neovim/nvim-lspconfig",
+    opts = {
+      servers = {
+        lua_ls = { enabled = false },
+        emmylua_ls = {
+          on_init = function(client)
+            -- 项目自带 .emmyrc.json / .luarc.json 时，交给项目配置，避免覆盖。
+            if client.workspace_folders then
+              local path = client.workspace_folders[1].name
+              if path ~= vim.fn.stdpath("config")
+                and (vim.uv.fs_stat(path .. "/.emmyrc.json") or vim.uv.fs_stat(path .. "/.luarc.json")) then
+                client.config.settings = {}
+              end
+            end
+          end,
+          settings = {
+            emmylua = {
+              -- Neovim 使用 LuaJIT；同时把 Neovim runtime 与 lazy 插件目录交给 LSP。
+              runtime = { version = "LuaJIT" },
+              diagnostics = { globals = { "vim" } },
+              workspace = {
+                library = {
+                  vim.env.VIMRUNTIME,
+                  vim.fn.stdpath("data") .. "/lazy",
+                },
+              },
+            },
+          },
+        },
+      },
+    },
+  },
 
   {
     "stevearc/conform.nvim",
@@ -1008,7 +1045,7 @@ LUA
     grep -q 'lazyvim_python_lsp' "$opts_file" \
       || printf '\n-- devkit: 使用 devkit 安装的 basedpyright\nvim.g.lazyvim_python_lsp = "basedpyright"\n' >> "$opts_file"
   else
-    printf '-- devkit: 使用 devkit 安装的 basedpyright\nvim.g.lazyvim_python_lsp = "basedpyright"\n' > "$opts_file"
+    printf '%s\n' '-- devkit: 使用 devkit 安装的 basedpyright' 'vim.g.lazyvim_python_lsp = "basedpyright"' > "$opts_file"
   fi
 }
 
@@ -1440,7 +1477,7 @@ bashrc_phase(){
 # python-bin 故意不加入 PATH：每个工具通过 shim 使用自己的 venv。
 if [ -d "$HOME/.devkit" ]; then
   case ":$PATH:" in *":$HOME/.devkit/shims:"*) ;; *)
-    export PATH="$HOME/.devkit/shims:$HOME/.devkit/musl/bin:$HOME/.devkit/node/bin:$HOME/.devkit/npm-global/bin:$HOME/.devkit/uv-tool-bin:$HOME/.devkit/cargo/bin:$HOME/.devkit/lua-ls/bin:$PATH" ;;
+    export PATH="$HOME/.devkit/shims:$HOME/.devkit/musl/bin:$HOME/.devkit/node/bin:$HOME/.devkit/npm-global/bin:$HOME/.devkit/uv-tool-bin:$HOME/.devkit/cargo/bin:$PATH" ;;
   esac
   # clangd 只依赖系统 glibc（2.18+）；放在 nvim 的 PATH 之后、系统 PATH 之前，
   # 这样 Neovim 的 C/C++ LSP 与命令行都用 devkit 这一份。
@@ -1492,10 +1529,10 @@ EOF
 # ---------------------------- 8.1 验收 -------------------------------------
 verify_phase(){
   step "验收"
-  export PATH="$UV_TOOL_BIN_DIR:$SHIM_DIR:$MUSL_BIN:$CLANG_TOOLS_BIN:$GIT_PREFIX/bin:$LUA_LS_PREFIX/bin:$NVIM_PREFIX/bin:$NODE_PREFIX/bin:$NPM_PREFIX/bin:$CARGO_HOME/bin:$PATH"
+  export PATH="$UV_TOOL_BIN_DIR:$SHIM_DIR:$MUSL_BIN:$CLANG_TOOLS_BIN:$GIT_PREFIX/bin:$NVIM_PREFIX/bin:$NODE_PREFIX/bin:$NPM_PREFIX/bin:$CARGO_HOME/bin:$PATH"
   local bin p v static_ok=0 static_bad=0 other_bad=0
   printf '\n%-10s %-8s %-52s %s\n' 工具 类型 路径 版本
-  for bin in keifu yazi ya gitui sk ducker eza bat rg fd btm zoxide uv uvx shuck stylua neocmakelsp; do
+  for bin in keifu yazi ya gitui sk ducker eza bat rg fd btm zoxide uv uvx shuck stylua neocmakelsp emmylua_ls; do
     p=$(command -v "$bin" 2>/dev/null || true)
     if [ -n "$p" ]; then
       v=$("$p" --version 2>/dev/null | head -1 || echo '?')
@@ -1514,7 +1551,7 @@ verify_phase(){
     if [ -x "$SHIM_DIR/opencode" ]; then other_bins="$SHIM_DIR/opencode $other_bins"
     else other_bins="$NPM_PREFIX/bin/opencode $other_bins"; fi
   fi
-  other_bins="nvim clangd git lua-language-server $other_bins"
+  other_bins="nvim clangd git $other_bins"
   for bin in $other_bins; do
     p=$(command -v "$bin" 2>/dev/null || true)
     if [ -n "$p" ]; then
@@ -1586,7 +1623,12 @@ main(){
   step "yazi / ya"
   install_yazi || die "yazi/ya 安装失败"
   install_neocmakelsp || warn "neocmakelsp 安装失败（CMake LSP 不可用）"
-  install_lua_ls || warn "lua-language-server 安装失败（Lua LSP 不可用）"
+  install_emmylua || warn "emmylua_ls 安装失败（Lua LSP 不可用）"
+  # 旧版安装的 lua-language-server 目录：新版改用 emmylua_ls 后不再使用。
+  if [ -e "$DEVKIT_ROOT/lua-ls" ]; then
+    rm -rf "$DEVKIT_ROOT/lua-ls"
+    log "清理旧 lua-language-server：$DEVKIT_ROOT/lua-ls"
+  fi
   ts_cli_phase
   # C/C++ 工具要在 Neovim 之前就位（LazyVim 的 clangd 扩展依赖它们），
   # 静态 git 也让后续 GitHub 克隆更稳。
