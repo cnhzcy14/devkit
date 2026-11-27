@@ -5,12 +5,13 @@
 
 - 使用方法：[docs/使用方法.md](docs/使用方法.md)
 - 设计与清理细节：[docs/devkit.md](docs/devkit.md)
-- 当前状态与下一步（Neovim/LazyVim）：[docs/HANDOFF.md](docs/HANDOFF.md)
+- 当前状态与下一步（Neovim 二进制 / 用户 dotfiles）：[docs/HANDOFF.md](docs/HANDOFF.md)
 
 脚本：
 
-- `setup-ubuntu.sh`：安装入口，支持 `APT_ONLY` / `SKIP_APT` / `UPDATE_TS_PARSERS` 等开关；
-  安装 Rust（musl 静态）、C/C++（clangd + 静态 git）、Neovim（LazyVim 托管配置，
-  自动关闭 Mason；Lua LSP 使用 emmylua_ls）与 Python（basedpyright/ruff）工具链
+- `setup-ubuntu.sh`：安装入口，支持 `APT_ONLY` / `SKIP_APT` / `FORCE_TS_CLI` 等开关；
+  安装 Rust（musl 静态）、C/C++（clangd + 静态 git）、Neovim（只装二进制）
+  与 Python（basedpyright/ruff）工具链。Neovim 的 LazyVim/Mason/parser 配置
+  不再由 devkit 写入；原托管配置已移出到你的 dotfiles 仓库。
 - `devkit-up.sh`：宿主机侧启动容器并执行安装
 - `devkit-cleanup.sh`：删除 `~/.devkit` 和 `.bashrc` 托管块（宿主机或容器内均可）

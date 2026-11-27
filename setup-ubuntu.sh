@@ -9,13 +9,14 @@
 #   * hunk / Trellis 走 Node + npm，Python 由 uv 托管 3.12；
 #   * 所有制品集中在 ~/.devkit，便于 devkit-cleanup.sh 完整删除；
 #   * .bashrc 只写一段带标记的块，重复执行自动替换，不碰用户其他内容；
+#   * Neovim 只安装二进制，配置与 parser 清单由用户 dotfiles 管理；
 #   * 默认全部使用国内镜像，可用 MIRROR=official 切回官方。
 #
 # 章节结构（函数按章节组织，实际执行顺序见文件末尾 main）：
 #   1 预检与系统依赖
 #   2 Rust 工具链与 CLI（musl 静态；含 uv、tree-sitter CLI、yazi、neocmakelsp、emmylua_ls）
 #   3 C/C++ 工具（clangd、静态 git）
-#   4 Neovim / LazyVim / Treesitter
+#   4 Neovim（源码编译；不写配置）
 #   5 Node.js 与 TS/JS 工具（hunk / Trellis / opencode）
 #   6 Python 运行时与工具 venv / shim
 #   7 .bashrc 托管块
@@ -43,11 +44,9 @@
 #   OPENSSL_TARBALL=...    musl 静态 OpenSSL 源码 tarball 地址（ducker 用）
 #   SKIP_APT=1             跳过 apt（镜像已预装依赖）
 #   FORCE_NVIM=1           重新编译 nvim
-#   FORCE_TS_CLI=1         重编 tree-sitter CLI（musl 静态）
-#   UPDATE_TS_PARSERS=1    安装/更新 LazyVim ensure_installed 的 Treesitter parser
+#   FORCE_TS_CLI=1         重编 tree-sitter CLI（glibc 版，供 Neovim 编译 parser）
 #   TS_CLI_VERSION=...     tree-sitter CLI 版本（默认 0.27.2，必须 >=0.26.1）
 #   FORCE_RUST_TOOLS=1     重编所有 Rust 工具
-#   FORCE_LAZYVIM=1        备份旧配置并重建 LazyVim
 #   WITH_OPENCODE=0        跳过 opencode（默认通过 npm 安装 @opencode/cli）
 #   OPENCODE_VERSION=...   opencode 版本（默认 latest）
 #   HUNK_VERSION=0.24.0    hunk 版本（0.24.1 的 linux 包尚未同步到 npmmirror）
@@ -69,10 +68,8 @@ MIRROR="${MIRROR:-cn}"
 SKIP_APT="${SKIP_APT:-0}"
 FORCE_NVIM="${FORCE_NVIM:-0}"
 FORCE_RUST_TOOLS="${FORCE_RUST_TOOLS:-0}"
-FORCE_LAZYVIM="${FORCE_LAZYVIM:-0}"
 WITH_OPENCODE="${WITH_OPENCODE:-1}"
 FORCE_TS_CLI="${FORCE_TS_CLI:-0}"
-UPDATE_TS_PARSERS="${UPDATE_TS_PARSERS:-0}"
 TS_CLI_VERSION="${TS_CLI_VERSION:-0.27.2}"
 HUNK_VERSION="${HUNK_VERSION:-0.24.0}"
 OPENCODE_VERSION="${OPENCODE_VERSION:-latest}"
@@ -117,7 +114,6 @@ export UV_TOOL_DIR="$DEVKIT_ROOT/uv-tools"
 export UV_TOOL_BIN_DIR="$DEVKIT_ROOT/uv-tool-bin"
 
 STATE_DIR="$DEVKIT_ROOT/state"
-BACKUP_DIR="$DEVKIT_ROOT/backups"
 NVIM_SRC="$DEVKIT_ROOT/src/neovim"
 NVIM_PREFIX="$DEVKIT_ROOT/nvim"
 NODE_PREFIX="$DEVKIT_ROOT/node"
@@ -130,7 +126,6 @@ GIT_PREFIX="$DEVKIT_ROOT/git"
 NEOCMAKELSP_BIN="$MUSL_BIN/neocmakelsp"
 EMMYLUA_BIN="$MUSL_BIN/emmylua_ls"
 MUSL_TARGET="x86_64-unknown-linux-musl"
-NVIM_CONFIG="$HOME/.config/nvim"
 
 if [ "$MIRROR" = "cn" ]; then
   if [ -z "${GH_MIRRORS:-}" ]; then
@@ -271,10 +266,6 @@ state_set_once(){
   state_set "$1" "$2"
 }
 state_get(){ [ -f "$STATE_DIR/setup.env" ] || return 1; . "$STATE_DIR/setup.env"; eval "printf '%s' \"\${$1:-}\""; }
-backup_path(){
-  mkdir -p "$BACKUP_DIR"
-  printf '%s/%s-%s' "$BACKUP_DIR" "$1" "$(date +%F-%H%M%S)"
-}
 
 # ============================================================================
 # 1. 预检与系统依赖
@@ -297,7 +288,7 @@ preflight(){
     warn "推荐在 ubuntu:20.04 中运行；当前版本编译的 nvim 兼容基线会变高"
   fi
   if [ "${APT_ONLY:-0}" != "1" ]; then
-    mkdir -p "$DEVKIT_ROOT" "$STATE_DIR" "$BACKUP_DIR"
+    mkdir -p "$DEVKIT_ROOT" "$STATE_DIR"
   fi
   if [ "$(id -u)" = "0" ] && [ "${APT_ONLY:-0}" != "1" ]; then
     die "完整安装禁止以 root 运行；root 只用于 APT_ONLY=1。请用: su - <同名普通用户> -c 'SKIP_APT=1 bash ...'"
@@ -678,56 +669,41 @@ install_emmylua(){
 }
 
 # ---------------------------- 2.4 tree-sitter CLI（供 Neovim 用） ----------
+# 故意的 glibc 例外：CLI 需要 dlopen Neovim 使用的 glibc parser.so。musl 静态版
+# 无法加载它，过去靠 wrapper 把 build 的失败改判为成功；改为 glibc 后 wrapper 不再需要。
 ts_cli_phase(){
-  step "tree-sitter CLI（musl 静态）"
+  step "tree-sitter CLI（glibc，供 Neovim 使用）"
   mkdir -p "$MUSL_BIN"
-  local real="$MUSL_BIN/tree-sitter.real" wrap="$MUSL_BIN/tree-sitter"
+  local bin="$MUSL_BIN/tree-sitter"
   local installed=""
-  if [ -x "$real" ] && [ "$FORCE_TS_CLI" != "1" ]; then
-    installed=$("$real" --version 2>/dev/null | head -1 || true)
+  if [ -x "$bin" ] && [ "$FORCE_TS_CLI" != "1" ]; then
+    installed=$("$bin" --version 2>/dev/null | head -1 || true)
   fi
   if [ -n "$installed" ] && [ "$installed" = "tree-sitter $TS_CLI_VERSION" ]; then
     log "$installed 已存在，跳过（FORCE_TS_CLI=1 重编）"
   else
-    local llvm_lib musl_inc gcc_inc
+    local llvm_lib
     llvm_lib=$(compgen -G '/usr/lib/llvm-*/lib/libclang.so*' 2>/dev/null | head -1 || true)
     [ -n "$llvm_lib" ] || die "缺少 libclang；请先以 root 执行 APT_ONLY=1（包含 libclang-dev）"
     llvm_lib=$(dirname "$llvm_lib")
-    musl_inc=/usr/include/x86_64-linux-musl
-    gcc_inc=$(cc -print-file-name=include)
-    log "编译 tree-sitter-cli $TS_CLI_VERSION → $real（约 1 分钟）"
-    LIBCLANG_PATH="$llvm_lib" \
-    BINDGEN_EXTRA_CLANG_ARGS_x86_64_unknown_linux_musl="-isystem $musl_inc -isystem $gcc_inc" \
-    RUSTFLAGS="-C target-feature=+crt-static -C link-arg=-L/usr/lib/x86_64-linux-musl" \
-    CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER=cc \
-      "$CARGO_HOME/bin/cargo" install tree-sitter-cli --version "$TS_CLI_VERSION" \
-        --locked --force --root "$DEVKIT_ROOT/ts-cli" --target "$MUSL_TARGET"
-    install -m 0755 "$DEVKIT_ROOT/ts-cli/bin/tree-sitter" "$real"
+    log "编译 tree-sitter-cli $TS_CLI_VERSION（glibc）→ $bin（约 1 分钟）"
+    # 临时 cargo root：最终二进制仍落到 musl/bin，不保留独立目录。
+    local root="$DEVKIT_ROOT/src/ts-cli"
+    rm -rf "$root"
+    # 子 shell 里清掉 musl 构建用的 CFLAGS，让 CLI 按宿主机 gnu target 构建。
+    (
+      unset CFLAGS CXXFLAGS CFLAGS_x86_64_unknown_linux_musl CXXFLAGS_x86_64_unknown_linux_musl
+      LIBCLANG_PATH="$llvm_lib" \
+        "$CARGO_HOME/bin/cargo" install tree-sitter-cli --version "$TS_CLI_VERSION" \
+          --locked --force --root "$root"
+    )
+    install -m 0755 "$root/bin/tree-sitter" "$bin"
+    rm -rf "$root"
   fi
-
-  cat > "$wrap" <<'EOF'
-#!/usr/bin/env bash
-# static-musl tree-sitter cannot dlopen the parser it just built.
-set -u
-real="$(dirname "$0")/tree-sitter.real"
-if [ "${1:-}" = "build" ]; then
-  out="parser.so"; prev=""
-  for a in "$@"; do
-    if [ "$prev" = "-o" ] || [ "$prev" = "--output" ]; then out="$a"; fi
-    prev="$a"
-  done
-  "$real" "$@"; rc=$?
-  if [ "$rc" -ne 0 ] && [ -s "$out" ] && readelf -h "$out" >/dev/null 2>&1; then
-    exit 0
-  fi
-  exit "$rc"
-fi
-exec "$real" "$@"
-EOF
-  chmod 0755 "$wrap"
-  is_static "$real" || die "tree-sitter CLI 不是静态链接：$(file "$real")"
-  "$wrap" --version
-  log "tree-sitter CLI 静态校验通过"
+  runtime_ok "$bin" || die "tree-sitter CLI 运行时崩溃：$(file "$bin")"
+  ldd "$bin" 2>/dev/null | grep -q 'ld-musl' && die "tree-sitter CLI 误为 musl 链接：$(file "$bin")"
+  "$bin" --version
+  log "tree-sitter CLI 就绪（glibc，供 Neovim 编译 parser）"
 }
 
 # ============================================================================
@@ -735,7 +711,7 @@ EOF
 # ============================================================================
 # * clangd 是官方包，libstdc++ 等已静态链接，只依赖系统 glibc（官方保证 2.18+），
 #   20.04 母机可直接运行；LSP、内置 clang-format、内置 clang-tidy 都由它提供。
-# * 暂不安装独立的 clang-format / clang-tidy：LazyVim 保存时走 clangd 的 LSP
+# * 暂不安装独立的 clang-format / clang-tidy：编辑器保存时走 clangd 的 LSP
 #   格式化（lsp_format = "fallback"），诊断走 clangd --clang-tidy；命令行/CI
 #   需要时再单独装。
 # * git：源码编译为静态 + HTTPS，替代上游 static-git（那个没有 libcurl，
@@ -889,7 +865,7 @@ git_phase(){
   local ver="${GIT_VERSION:-}" src="$DEVKIT_ROOT/src/git" tar
   [ -n "$ver" ] || ver=$(latest_git_version)
   [ -n "$ver" ] || { warn "无法解析 git 版本"; return 1; }
-  # 已装好的 git 也要进 PATH：否则后面的 LazyVim 克隆仍走系统 git。
+  # 已装好的 git 也要进 PATH：否则后面的 GitHub 克隆仍走系统 git。
   if [ -x "$GIT_BIN" ]; then
     export PATH="$GIT_PREFIX/bin:$PATH"
   fi
@@ -950,126 +926,11 @@ git_phase(){
 }
 
 # ============================================================================
-# 4. Neovim / LazyVim / Treesitter
+# 4. Neovim（源码编译；配置由 dotfiles 管理）
 # ============================================================================
 track_nvim_dir(){
   local dir="$1" key="$2"
   if [ -e "$dir" ]; then state_set_once "$key" 0; else state_set_once "$key" 1; fi
-}
-
-# tree-sitter CLI 本身是 musl 构建，其 cc crate 会按 musl target 默认选 musl-gcc。
-# nvim-treesitter 编译 parser 时继承本脚本的环境，所以必须先切到 glibc 编译器。
-use_glibc_cc_for_nvim(){
-  export CC=/usr/bin/cc CXX=/usr/bin/c++
-  export CC_x86_64_unknown_linux_musl=/usr/bin/cc
-  export CXX_x86_64_unknown_linux_musl=/usr/bin/c++
-  unset CFLAGS CXXFLAGS CFLAGS_x86_64_unknown_linux_musl CXXFLAGS_x86_64_unknown_linux_musl
-}
-
-# 托管 LazyVim 配置：只对带 .devkit-managed 的配置写入，重跑幂等覆盖。
-# 关闭 Mason，改用 devkit 提供的 clangd / basedpyright / emmylua_ls / shuck 等；Lua 格式化也走 emmylua_ls。
-write_lazyvim_devkit_config(){
-  local plugin_dir="$NVIM_CONFIG/lua/plugins"
-  local opts_file="$NVIM_CONFIG/lua/config/options.lua"
-  mkdir -p "$plugin_dir"
-  cat > "$plugin_dir/devkit.lua" <<'LUA'
--- 由 devkit setup-ubuntu.sh 生成，重跑会覆盖；自定义请另建文件。
-return {
-  -- 关闭 Mason：LSP / formatter 统一由 devkit 安装。
-  { "mason-org/mason.nvim", enabled = false },
-  { "mason-org/mason-lspconfig.nvim", enabled = false },
-  { "williamboman/mason.nvim", enabled = false },
-  { "williamboman/mason-lspconfig.nvim", enabled = false },
-  { "stevearc/conform.nvim", dependencies = {} },
-
-  { import = "lazyvim.plugins.extras.lang.clangd" },
-  { import = "lazyvim.plugins.extras.lang.cmake" },
-  { import = "lazyvim.plugins.extras.lang.python" },
-
-  {
-    -- Lua LSP：用 EmmyLua Analyzer Rust（emmylua_ls）替代 lua-language-server。
-    -- LazyVim 自带 lua_ls 配置，这里显式关闭，避免两个 Lua LSP 同时启动。
-    "neovim/nvim-lspconfig",
-    opts = {
-      servers = {
-        lua_ls = { enabled = false },
-        emmylua_ls = {
-          on_init = function(client)
-            -- 项目自带 .emmyrc.json / .luarc.json 时，交给项目配置，避免覆盖。
-            if client.workspace_folders then
-              local path = client.workspace_folders[1].name
-              if path ~= vim.fn.stdpath("config")
-                and (vim.uv.fs_stat(path .. "/.emmyrc.json") or vim.uv.fs_stat(path .. "/.luarc.json")) then
-                client.config.settings = {}
-              end
-            end
-          end,
-          settings = {
-            emmylua = {
-              -- Neovim 使用 LuaJIT；同时把 Neovim runtime 与 lazy 插件目录交给 LSP。
-              runtime = { version = "LuaJIT" },
-              diagnostics = { globals = { "vim" } },
-              workspace = {
-                library = {
-                  vim.env.VIMRUNTIME,
-                  vim.fn.stdpath("data") .. "/lazy",
-                },
-              },
-            },
-          },
-        },
-      },
-    },
-  },
-
-  {
-    "stevearc/conform.nvim",
-    opts = {
-      -- 不配外部 formatter：LazyVim 默认 lsp_format = "fallback"，
-      -- C/C++ 由 clangd 内置 clang-format、Lua 由 emmylua_ls 内置格式化完成。
-      formatters_by_ft = {
-        -- 清掉 LazyVim 默认的 stylua，让 Lua 走 emmylua_ls 的 LSP 格式化。
-        lua = {},
-        sh = { "shuck" },
-      },
-      formatters = {
-        shuck = { command = "shuck", args = { "format", "--stdin-filename", "$FILENAME", "-" } },
-      },
-    },
-  },
-}
-LUA
-  mkdir -p "$(dirname "$opts_file")"
-  if [ -f "$opts_file" ]; then
-    grep -q 'lazyvim_python_lsp' "$opts_file" \
-      || printf '\n-- devkit: 使用 devkit 安装的 basedpyright\nvim.g.lazyvim_python_lsp = "basedpyright"\n' >> "$opts_file"
-  else
-    printf '%s\n' '-- devkit: 使用 devkit 安装的 basedpyright' 'vim.g.lazyvim_python_lsp = "basedpyright"' > "$opts_file"
-  fi
-}
-
-# extras 引入的 cpp/cmake/ninja/rst parser 不一定是 LazyVim 默认集，sync 后补装。
-ensure_lazyvim_parsers(){
-  local script=/tmp/devkit-ts-extra.lua
-  [ -x "$NVIM_PREFIX/bin/nvim" ] || return 0
-  use_glibc_cc_for_nvim
-  export PATH="$MUSL_BIN:$NVIM_PREFIX/bin:$PATH"
-  cat > "$script" <<'LUA'
-local TS = require("nvim-treesitter")
-TS.install({ "cpp", "cmake", "ninja", "rst" }):await(function(err)
-  if err then
-    vim.cmd("cquit 1")
-  else
-    vim.cmd("qa")
-  end
-end)
-LUA
-  if "$NVIM_PREFIX/bin/nvim" --headless -c "luafile $script"; then
-    log "extras parser 就绪（cpp/cmake/ninja/rst）"
-  else
-    warn "extras parser 未完成（可重跑脚本或手动 :TSInstall cpp cmake ninja rst）"
-  fi
-  rm -f "$script"
 }
 
 # ---------------------------- 4.1 Neovim（源码编译） -----------------------
@@ -1150,128 +1011,9 @@ nvim_phase(){
     grep -qa 'ld-musl' "$NVIM_PREFIX/bin/nvim" && die "nvim 产物误为 musl 链接"
     log "nvim 安装完成：$("$NVIM_PREFIX/bin/nvim" --version | head -1)"
   fi
-  "$NVIM_PREFIX/bin/nvim" --headless +qa >/dev/null 2>&1 || warn "nvim headless 自检异常"
+  "$NVIM_PREFIX/bin/nvim" --headless -u NONE +qa >/dev/null 2>&1 || warn "nvim headless 自检异常"
 }
 
-# ---------------------------- 4.2 LazyVim -----------------------------------
-lazyvim_phase(){
-  step "LazyVim"
-  local managed=0 do_sync=0
-  [ -f "$NVIM_CONFIG/.devkit-managed" ] && managed=1
-  if [ -d "$NVIM_CONFIG" ] && [ "$FORCE_LAZYVIM" != "1" ]; then
-    if [ "$managed" = "1" ]; then
-      log "$NVIM_CONFIG 是本工具安装的 LazyVim，保留"
-      state_set NVIM_CONFIG_CREATED 1
-      do_sync=1
-    else
-      warn "$NVIM_CONFIG 已存在且非本工具创建，保留不动（FORCE_LAZYVIM=1 可备份重建）"
-      state_set NVIM_CONFIG_CREATED 0
-      do_sync=0
-    fi
-  else
-    if [ -d "$NVIM_CONFIG" ]; then
-      local bak; bak=$(backup_path nvim)
-      mv "$NVIM_CONFIG" "$bak"
-      state_set NVIM_CONFIG_BACKUP "$bak"
-      log "旧 nvim 配置备份 → $bak"
-    fi
-    mkdir -p "$(dirname "$NVIM_CONFIG")"
-    gh_clone "https://github.com/LazyVim/starter.git" "$NVIM_CONFIG" \
-      || die "LazyVim starter 克隆失败"
-    rm -rf "$NVIM_CONFIG/.git"
-    touch "$NVIM_CONFIG/.devkit-managed"
-    managed=1
-    # 容器内无 X11：用 OSC52 通过终端访问宿主机剪贴板
-    sed -i '1i vim.g.clipboard = "osc52"' "$NVIM_CONFIG/init.lua"
-    state_set NVIM_CONFIG_CREATED 1
-    log "LazyVim starter 已安装到 $NVIM_CONFIG"
-    do_sync=1
-  fi
-
-  if [ "$do_sync" != "1" ]; then
-    log "跳过 Lazy sync（配置不属于本工具）"
-    return 0
-  fi
-  if [ ! -x "$NVIM_PREFIX/bin/nvim" ]; then
-    warn "nvim 缺失，跳过 Lazy sync"; return 0
-  fi
-  if [ "$managed" = "1" ]; then
-    write_lazyvim_devkit_config
-    log "LazyVim 托管配置：已禁用 Mason，启用 clangd/cmake/python extras"
-  fi
-  log "headless Lazy! sync（插件下载走 GitHub；失败可重跑续传）"
-  use_glibc_cc_for_nvim
-  if "$NVIM_PREFIX/bin/nvim" --headless "+Lazy! sync" +qa; then
-    log "Lazy sync 完成"
-    if [ "$managed" = "1" ]; then
-      ensure_lazyvim_parsers
-    fi
-  else
-    warn "Lazy sync 未完成，网络好转后重跑本脚本"
-  fi
-}
-
-# ---------------------------- 4.3 Treesitter parser（glibc） ---------------
-ts_parsers_phase(){
-  step "Treesitter parser（glibc）"
-  if [ "$UPDATE_TS_PARSERS" != "1" ]; then
-    log "UPDATE_TS_PARSERS=0，跳过"
-    return 0
-  fi
-  [ -x "$MUSL_BIN/tree-sitter.real" ] || die "tree-sitter CLI 缺失，无法更新 parser"
-  [ -x "$NVIM_PREFIX/bin/nvim" ] || die "nvim 缺失，无法更新 parser"
-  [ -d "$NVIM_CONFIG" ] || die "LazyVim 配置缺失，无法更新 parser"
-  # tree-sitter CLI 本身是 musl 构建，必须把 target 专用编译器指向 glibc cc，
-  # 否则 parser 会链接到 musl 的 libc.so，Neovim（glibc）无法 dlopen。
-  use_glibc_cc_for_nvim
-  export PATH="$MUSL_BIN:$NVIM_PREFIX/bin:$PATH"
-  local script=/tmp/devkit-ts-update.lua
-  local musl_langs="" so lang
-  for so in "$HOME/.local/share/nvim/site/parser"/*.so; do
-    [ -e "$so" ] || continue
-    if readelf -d "$so" 2>/dev/null | grep -q 'Shared library: \[libc\.so\]'; then
-      lang=$(basename "$so" .so)
-      musl_langs+="\"$lang\", "
-    fi
-  done
-  if [ -n "$musl_langs" ]; then
-    warn "发现 musl 版 parser，强制用 glibc 重编：$musl_langs"
-    cat > "$script" <<LUA
-local TS = require("nvim-treesitter")
-TS.install({ $musl_langs }, { force = true }):await(function()
-  vim.cmd("qa")
-end)
-LUA
-  else
-    cat > "$script" <<'LUA'
-local TS = require("nvim-treesitter")
-TS.update(nil, { summary = true }):await(function()
-  vim.cmd("qa")
-end)
-LUA
-  fi
-  log "headless TSUpdate（在构建容器内编译 glibc parser）"
-  if "$NVIM_PREFIX/bin/nvim" --headless -c "luafile $script"; then
-    log "Treesitter parser 更新完成"
-  else
-    warn "TSUpdate 未完成，可稍后重跑"
-  fi
-  rm -f "$script"
-  local count
-  count=$(find "$HOME/.local/share/nvim/site/parser" -maxdepth 1 -name '*.so' 2>/dev/null | wc -l)
-  log "parser 数量：$count（$HOME/.local/share/nvim/site/parser）"
-  local bad=0 so
-  for so in "$HOME/.local/share/nvim/site/parser"/*.so; do
-    [ -e "$so" ] || continue
-    if readelf -d "$so" 2>/dev/null | grep -q 'Shared library: \[libc\.so\]'; then
-      warn "parser 链接到 musl libc：$(basename "$so")"
-      bad=1
-    fi
-  done
-  [ "$bad" -eq 0 ] || die "parser 的 libc 链接异常，Neovim 无法 dlopen；请检查 CC_x86_64_unknown_linux_musl"
-}
-
-# ============================================================================
 # 5. Node.js 与 TS/JS 工具
 # ============================================================================
 # ---------------------------- 5.1 Node.js 22 LTS ---------------------------
@@ -1568,12 +1310,6 @@ verify_phase(){
     printf '\033[33m%-10s %-8s %-52s %s\033[0m\n' python3 缺失 - -
     other_bad=$((other_bad+1))
   fi
-  local plugins=0
-  if [ -d "$HOME/.local/share/nvim/lazy" ]; then
-    plugins=$(find "$HOME/.local/share/nvim/lazy" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | wc -l)
-  fi
-  printf 'LazyVim 插件：%d 个（%s）\n' "$plugins" "$HOME/.local/share/nvim/lazy"
-  [ "$plugins" -eq 0 ] && warn "LazyVim 插件尚未同步（网络恢复后重跑即可续传）"
   printf '\n制品根目录：%s\n' "$DEVKIT_ROOT"
   printf 'Rust 静态工具：%d 通过，%d 异常；其他工具缺失：%d\n' "$static_ok" "$static_bad" "$other_bad"
   if [ "$static_bad" -ne 0 ] || [ "$other_bad" -ne 0 ]; then
@@ -1587,7 +1323,8 @@ cleanup_build_artifacts_phase(){
   step "清理构建中间产物"
   local p f removed=0
   for p in "$NVIM_SRC/.deps" "$NVIM_SRC/build" \
-           "$DEVKIT_ROOT/ts-cli" "$OPENSSL_MUSL" "$DEVKIT_ROOT/src/yazi" \
+           "$DEVKIT_ROOT/src/ts-cli" "$DEVKIT_ROOT/ts-cli" "$OPENSSL_MUSL" \
+           "$DEVKIT_ROOT/src/yazi" \
            "$DEVKIT_ROOT/src/git" "$CURL_STATIC" "$DEVKIT_ROOT/src/curl"; do
     [ -e "$p" ] || continue
     log "删除 $p"
@@ -1629,15 +1366,13 @@ main(){
     log "清理旧 lua-language-server：$DEVKIT_ROOT/lua-ls"
   fi
   ts_cli_phase
-  # C/C++ 工具要在 Neovim 之前就位（LazyVim 的 clangd 扩展依赖它们），
+  # C/C++ 工具要在 Neovim 之前就位（devkit 的 clangd 扩展依赖它们），
   # 静态 git 也让后续 GitHub 克隆更稳。
   clang_phase || warn "clangd 未完成（重跑可续装）"
   git_phase || warn "静态 git 未完成，暂用系统 git（重跑可续装）"
-  # 先写 .bashrc：后面 nvim/LazyVim 即使网络失败，musl 工具也已可用。
+  # 先写 .bashrc：后面 nvim 即使网络失败，musl 工具也已可用。
   bashrc_phase
   nvim_phase
-  lazyvim_phase
-  ts_parsers_phase
   node_phase
   npm_tools_phase
   python_env_phase

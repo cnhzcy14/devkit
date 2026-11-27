@@ -17,8 +17,10 @@ Ubuntu 容器内运行；宿主机只负责启动容器，不直接运行安装�
 | 文件 | 作用 |
 |---|---|
 | `setup-ubuntu.sh` | 在 Ubuntu 20.04/22.04 容器内安装全部工具，幂等可重跑 |
-| `devkit-cleanup.sh` | 完整删除安装制品，清理并还原 `.bashrc` 托管块 |
+| `devkit-cleanup.sh` | 完整删除安装制品并清理 `.bashrc` 托管块 |
 | `devkit-up.sh` | 宿主机侧启动母机容器（沿用你的 docker run 参数） |
+
+> 原 `dotfiles/nvim/` 临时目录已移出 devkit；Neovim 配置由你的 dotfiles 仓库管理。
 
 ## 制品布局
 
@@ -26,7 +28,7 @@ Ubuntu 容器内运行；宿主机只负责启动容器，不直接运行安装�
 
 ```text
 ~/.devkit/
-├── musl/bin/       musl 静态 Rust 工具（含 uv/uvx、neocmakelsp、emmylua_ls）+ tree-sitter CLI/wrapper
+├── musl/bin/       musl 静态 Rust 工具（含 uv/uvx、neocmakelsp、emmylua_ls）+ tree-sitter CLI（glibc，供 Neovim）
 ├── clang/bin/      clangd（LSP + 内置 clang-format / clang-tidy，glibc 2.18+）
 ├── git/bin/        静态编译的 git（自带 HTTPS），优先于系统 git
 ├── python-bin/     uv 安装的 Python 3.12 可执行文件（不加入全局 PATH）
@@ -37,10 +39,9 @@ Ubuntu 容器内运行；宿主机只负责启动容器，不直接运行安装�
 ├── node/           Node.js 22 LTS
 ├── npm-global/     hunk / Trellis 等 npm 全局包
 ├── rustup/ cargo/  musl 构建工具链
-├── ts-cli/         tree-sitter CLI 构建产物
 ├── uv-python/      uv 托管的 Python 3.12（glibc）
 ├── openssl-musl/   ducker 需要的静态 OpenSSL
-├── src/ backups/ state/
+├── src/ state/
 ```
 
 `~/.bashrc` 只追加一段带
@@ -143,7 +144,7 @@ SKIP_APT=1 bash /home/$USER/work/project/devkit/setup-ubuntu.sh
 > 运行；宿主机只负责 `docker run` / `devkit-up.sh`。
 
 安装脚本按章节从上到下执行：
-预检/apt → Rust → C/C++（clangd、静态 git）→ `.bashrc` → Neovim/LazyVim → Node/TS-JS → Python → 验收/清理。
+预检/apt → Rust → C/C++（clangd、静态 git）→ `.bashrc` → Neovim（仅编译）→ Node/TS-JS → Python → 验收/清理。
 重跑是幂等的，已装好的工具会自动跳过。
 
 ## 安装内容
@@ -156,14 +157,13 @@ SKIP_APT=1 bash /home/$USER/work/project/devkit/setup-ubuntu.sh
 | 2. Rust 工具链与 CLI | 2.1 | rustup + stable + `x86_64-unknown-linux-musl`，写 cargo 镜像与 crt-static 配置 |
 | | 2.2 | `keifu` `gitui` `sk` `ducker` `eza` `bat` `rg` `fd` `btm` `zoxide` `uv`/`uvx` |
 | | 2.3 | `yazi` / `ya`（GitHub musl 预编译包优先，失败源码编译） |
-| | 2.4 | `tree-sitter` CLI（musl 静态 + wrapper，供 Neovim 编译 parser） |
+| | 2.4 | `tree-sitter` CLI（glibc，供 Neovim 编译 parser；不按 musl 静态构建） |
 | | 2.5 | `shuck`（替代 shfmt，cargo 源码编译，musl 静态） |
 | | 2.6 | `neocmakelsp`（Rust 编写，官方 musl 包）、`emmylua_ls`（EmmyLua Analyzer Rust，官方 musl 静态包，替代原 lua-language-server） |
 | 3. C/C++ 工具 | 3.1 | `clangd`（官方包，libstdc++ 静态 / glibc 2.18+）→ `~/.devkit/clang/bin`；LSP、内置 clang-format / clang-tidy |
 | | 3.2 | 静态 `git` 2.56.x（源码编译，自带 HTTPS/libcurl）→ `~/.devkit/git/bin` |
-| 4. Neovim / LazyVim / Treesitter | 4.1 | Neovim 最新 tag 源码编译 → `~/.devkit/nvim` |
-| | 4.2 | LazyVim starter → `~/.config/nvim`，headless `Lazy! sync` 装插件（nvim-treesitter 随后会按其清单从 GitHub 拉语法并编译基础 parser）；托管配置写入 `lua/plugins/devkit.lua`（关 Mason、clangd/cmake/python extras、关闭 lua_ls 并启用 emmylua_ls、shuck）与 `options.lua`（basedpyright） |
-| | 4.3 | `UPDATE_TS_PARSERS=1` 时按 LazyVim 列表更新 Treesitter parser；托管配置另补装 `cpp/cmake/ninja/rst`，均强制 glibc 编译 |
+| 4. Neovim（仅编译） | 4.1 | Neovim 最新 tag 源码编译 → `~/.devkit/nvim`；不写 `~/.config/nvim` |
+| | 4.2 | LazyVim/Mason/parser 配置由用户 dotfiles 管理；原示例已移出 devkit |
 | 5. Node.js 与 TS/JS 工具 | 5.1 | Node.js 22 LTS → `~/.devkit/node` |
 | | 5.2 | `hunk`(hunkdiff)、`trellis`、`opencode` → `~/.devkit/npm-global` |
 | 6. Python 运行时与工具环境 | 6.1 | uv 托管 Python 3.12 + trellis/opencode 独立 venv |
@@ -171,7 +171,7 @@ SKIP_APT=1 bash /home/$USER/work/project/devkit/setup-ubuntu.sh
 | | 6.3 | trellis/opencode 的 venv 注入 shim |
 | 7. `.bashrc` 托管块 | 7.1 | PATH 与环境变量（shims、musl/bin、clang/bin、git/bin、node、npm-global、uv-tool-bin、cargo、nvim），`y()` 包装函数 |
 | 8. 验收与清理 | 8.1 | 验收表：版本 + 静态链接校验 |
-| | 8.2 | 删除构建中间产物（neovim `.deps`/`build`、ts-cli、openssl-musl、git/curl 源码） |
+| | 8.2 | 删除构建中间产物（neovim `.deps`/`build`、`src/ts-cli`、openssl-musl、git/curl 源码） |
 
 ### Rust 工具（全部 musl 静态）
 
@@ -207,9 +207,9 @@ C/C++ 只安装 `clangd`，不装独立的 `clang-format` / `clang-tidy`。clang
 LSP，并内置格式化与 clang-tidy 检查能力：
 
 - **LSP**：补全、跳转、语义诊断、inlay hints 等；
-- **格式化**：clangd 内置 clang-format。LazyVim 的 clangd extra 已传
+- **格式化**：clangd 内置 clang-format。示例 Neovim 配置的 clangd extra 已传
   `--fallback-style=llvm`，conform 默认 `lsp_format = "fallback"`，保存时走 LSP 格式化；
-- **clang-tidy 诊断**：LazyVim 的 clangd extra 已传 `--clang-tidy`，由 clangd 跑内置检查。
+- **clang-tidy 诊断**：示例配置的 clangd extra 已传 `--clang-tidy`，由 clangd 跑内置检查。
 
 因此不需要独立 CLI；只有命令行或 CI 需要直接敲 `clang-format` / `clang-tidy` 时，
 再单独安装。
@@ -246,103 +246,29 @@ OpenSSL + zlib，关闭 LDAP 等无关协议，**保留 proxy 支持**以适配�
 **clangd 找标准库头**：clangd 包只带 clang 内置头（`lib/clang/<ver>/include`），
 C++ 标准库头来自母机的 g++（`build-essential`，脚本已装）。
 
-关掉 Mason 后 LazyVim 的 C/C++ 能力完全由 clangd 提供：
+关掉 Mason 后 C/C++ 能力完全由 clangd 提供（示例配置已移出到你的 dotfiles 仓库）：
 
 - clangd：`neovim/nvim-lspconfig` 的 `clangd` 服务，`cmd` 里直接调用 `clangd`；
 - 格式化：clangd 内置 clang-format（LSP fallback）；
 - 诊断：clangd `--clang-tidy`。
 
-Mason 由脚本自动关闭，见下一节。
+Mason 由你的 Neovim 配置关闭；示例文件 `lua/plugins/devkit.lua` 已移出到你的
+dotfiles 仓库。
 
-#### 自动关闭 Mason（托管配置）
+#### 关闭 Mason（示例配置）
 
-用本脚本安装的 LazyVim（`~/.config/nvim/.devkit-managed`）会在每次安装/重跑时
-自动写入 `~/.config/nvim/lua/plugins/devkit.lua`，并幂等设置
-`lua/config/options.lua` 里的 `vim.g.lazyvim_python_lsp`。内容包括：
+devkit 不再写 `~/.config/nvim`。原 `dotfiles/nvim/` 临时目录已移出 devkit，
+其中等价的增量配置包括：
 
-- 禁用两种 org 名的 `mason.nvim` / `mason-lspconfig.nvim`；
-- 去掉 `conform.nvim` 对 `mason.nvim` 的依赖；
-- 导入 `lang.clangd`、`lang.cmake`、`lang.python` 三个 extras；
-- **Lua LSP 改用 `emmylua_ls`**：显式关闭 LazyVim 默认的 `lua_ls`，配置
-  `emmylua_ls` 的 `runtime.version = "LuaJIT"`、`vim` 全局和 `VIMRUNTIME` /
-  lazy 插件目录作为 library；
-- Shell 格式化从默认的 `shfmt` 改为 `shuck`；Lua 清空 LazyVim 默认的 `stylua`
-  （conform 里 `lua = {}`），改由 `emmylua_ls` 内置格式化经 LSP fallback 完成；
-- `vim.g.lazyvim_python_lsp = "basedpyright"`。
+- `lua/plugins/devkit.lua`：禁用两种 org 名的 `mason.nvim` /
+  `mason-lspconfig.nvim`，去掉 `conform.nvim` 对 Mason 的依赖，导入
+  `lang.clangd`、`lang.cmake`、`lang.python` extras，关闭 `lua_ls` 并启用
+  `emmylua_ls`，Shell 格式化改用 `shuck`；
+- `lua/plugins/treesitter.lua`：显式 parser 清单；
+- `lua/config/options.lua`：`vim.g.lazyvim_python_lsp = "basedpyright"` 和
+  `vim.g.clipboard = "osc52"`。
 
-Lazy sync 成功后脚本还会补装 extras 需要的 Treesitter parser：
-`cpp / cmake / ninja / rst`（落在 `~/.local/share/nvim/site/parser`）。
-
-非托管配置可手工加入等价片段：
-
-```lua
--- ~/.config/nvim/lua/plugins/devkit.lua
-return {
-  -- 禁用 mason 及 mason-lspconfig；LSP 服务改由 PATH 中的 devkit 二进制提供
-  { "mason-org/mason.nvim", enabled = false },
-  { "mason-org/mason-lspconfig.nvim", enabled = false },
-  { "williamboman/mason.nvim", enabled = false },
-  { "williamboman/mason-lspconfig.nvim", enabled = false },
-
-  -- conform.nvim 声明依赖 mason.nvim，禁用后这里去掉依赖
-  { "stevearc/conform.nvim", dependencies = {} },
-
-  { import = "lazyvim.plugins.extras.lang.clangd" },
-  { import = "lazyvim.plugins.extras.lang.cmake" },
-  { import = "lazyvim.plugins.extras.lang.python" },
-
-  -- Lua LSP：关闭 lua_ls，改用 devkit 提供的 EmmyLua Analyzer Rust
-  {
-    "neovim/nvim-lspconfig",
-    opts = {
-      servers = {
-        lua_ls = { enabled = false },
-        emmylua_ls = {
-          on_init = function(client)
-            -- 项目自带 .emmyrc.json / .luarc.json 时交给项目配置
-            if client.workspace_folders then
-              local path = client.workspace_folders[1].name
-              if
-                path ~= vim.fn.stdpath("config")
-                and (vim.uv.fs_stat(path .. "/.emmyrc.json") or vim.uv.fs_stat(path .. "/.luarc.json"))
-              then
-                client.config.settings = {}
-              end
-            end
-          end,
-          settings = {
-            emmylua = {
-              runtime = { version = "LuaJIT" },
-              diagnostics = { globals = { "vim" } },
-              workspace = {
-                library = {
-                  vim.env.VIMRUNTIME,
-                  vim.fn.stdpath("data") .. "/lazy",
-                },
-              },
-            },
-          },
-        },
-      },
-    },
-  },
-
-  {
-    "stevearc/conform.nvim",
-    opts = {
-      -- 不配外部 formatter，保存时走 LSP fallback：
-      -- C/C++ 用 clangd 内置 clang-format，Lua 用 emmylua_ls 内置格式化。
-      formatters_by_ft = { lua = {}, sh = { "shuck" } },
-      formatters = {
-        shuck = {
-          command = "shuck",
-          args = { "format", "--stdin-filename", "$FILENAME", "-" },
-        },
-      },
-    },
-  },
-}
-```
+把这些文件合并到你的 LazyVim/dotfiles 配置即可；细节以文件内容为准。
 
 禁掉 Mason 后各语言的能力来源：
 
@@ -359,20 +285,22 @@ return {
 | Shell 格式化 | `shuck`（替代 `shfmt`） | 同上 |
 | Treesitter parser | `tree-sitter` CLI | 同上 |
 
-本项目不再安装 `stylua`：托管 LazyVim 配置已清空它作为 Lua formatter，Lua 格式化
+本项目不再安装 `stylua`：示例配置已清空它作为 Lua formatter，Lua 格式化
 统一由 `emmylua_ls` 内置完成。
 
 需要留意：
 
 - **codelldb（DAP 调试器）** 由 `mason-nvim-dap` 提供。禁用 Mason 后 C/C++ 调试适配器
   不再自动安装；需要调试就用 `gdb`（母机 apt 里的 `gdb`）或另行放置 `codelldb`。
-- Neovim 启动时不会再出现 Mason 的下载请求；`LazyVim.has("mason.nvim")` 为 false。
+- 使用示例配置后，Neovim 启动时不会再出现 Mason 的下载请求；
+  `LazyVim.has("mason.nvim")` 为 false。
 
 ### Neovim / TS-JS / Python
 
 - Neovim：`git ls-remote` 取最新 `vX.Y.Z` tag，源码编译到 `~/.devkit/nvim`；
-- tree-sitter CLI：源码编译为 musl 静态二进制，带 wrapper，供 nvim parser 使用；
-- LazyVim：克隆 starter 到 `~/.config/nvim`，自动加 OSC52 剪贴板设置；
+- tree-sitter CLI：按宿主机 gnu target 编译（glibc），与 Neovim 的 parser 共用一个
+  libc 家族；不再需要 wrapper；
+- LazyVim/Mason/parser：不再由 devkit 克隆或写入；示例配置已移出到你的 dotfiles 仓库；
 - Node.js 22 LTS：npmmirror 官方 tarball；
 - uv + Python 3.12：uv 二进制在 Rust 阶段安装；Python 3.12 只装一份，Trellis 与
   opencode 各自使用独立 venv（`~/.devkit/venvs/`），互不共享 site-packages；
@@ -397,8 +325,8 @@ bash ~/work/project/devkit/devkit-cleanup.sh
 - `.bashrc` 的 devkit 标记块；
 - 仅当 setup 创建过时才删除 `~/.local/share/nvim`、`~/.local/state/nvim`、
   `~/.cache/nvim`；
-- 若 setup 备份过旧的 `~/.config/nvim`，自动还原；判断依据是配置目录里的
-  `.devkit-managed` 标记，标记被移除时视为用户自有配置并保留。
+- 不再删除或还原 `~/.config/nvim`；如果发现旧版 `.devkit-managed` 标记，只提示
+  手动处理。
 
 先预览：
 
@@ -434,14 +362,12 @@ DRY_RUN=1 bash /home/$USER/work/project/devkit/devkit-cleanup.sh
 | `PYTHON_VERSION` | `3.12` | uv 托管的 Python 版本 |
 | `UV_VERSION` | 最新 release | uv musl 静态包版本；可固定避免 API 解析 |
 | `FORCE_NVIM` | `0` | 强制重编 nvim |
-| `FORCE_TS_CLI` | `0` | 强制重编 tree-sitter CLI（musl 静态） |
-| `UPDATE_TS_PARSERS` | `0` | `1` 安装/更新 LazyVim ensure_installed 的 parser |
+| `FORCE_TS_CLI` | `0` | 强制重编 tree-sitter CLI（glibc） |
 | `TS_CLI_VERSION` | `0.27.2` | tree-sitter CLI 版本，必须 >=0.26.1 |
 | `SHUCK_VERSION` | `0.2.11` | shuck-cli 版本（musl 静态） |
 | `NEOCMAKELSP_VERSION` | `0.12.0` | neocmakelsp 版本（官方 musl 包） |
 | `EMMYLUA_VERSION` | `0.25.1` | emmylua_ls / EmmyLua Analyzer Rust 版本（官方 musl 静态包） |
 | `FORCE_RUST_TOOLS` | `0` | 强制重编 Rust 工具，并重装 neocmakelsp/emmylua_ls |
-| `FORCE_LAZYVIM` | `0` | 备份旧配置并重建 LazyVim |
 | `WITH_OPENCODE` | `1` | 通过 npm 安装 opencode；设 `0` 跳过 |
 | `OPENCODE_VERSION` | `latest` | opencode 版本（npm 包 `@opencode/cli`） |
 | `HUNK_VERSION` | `0.24.0` | hunk 版本 |
@@ -473,9 +399,9 @@ SKIP_APT=1 bash setup-ubuntu.sh
 ## 耗时提示
 
 首次完整安装会编译 12 个 Rust 工具、musl 静态 OpenSSL、Neovim 和 tree-sitter CLI，
-另会下载 Python；视机器性能大约 25–45 分钟。`UPDATE_TS_PARSERS=1` 时还会编译
-Treesitter parser。Rust 工具、nvim 和 tree-sitter CLI 都有“已存在则跳过”逻辑，
-失败后重跑只补未完成项。
+另会下载 Python；视机器性能大约 25–45 分钟。Rust 工具、nvim 和 tree-sitter CLI
+都有“已存在则跳过”逻辑，失败后重跑只补未完成项。Treesitter parser 由你的
+Neovim 配置在首次启动时安装，不计入 devkit 安装时间。
 
 ## 宿主机上 `yazi` 不能运行的排查
 
@@ -495,7 +421,7 @@ command -v yazi
   `/home/$USER`。
 - 如果二进制存在但 `command -v yazi` 找不到：`.bashrc` 托管块没写入或当前
   shell 没重新加载。`setup-ubuntu.sh` 现在会在 nvim 之前先写 `.bashrc`，即使
-  后面 nvim/LazyVim 因网络失败，yazi 等 musl 工具也已经可用。
+  后面 nvim 因网络失败，yazi 等 musl 工具也已经可用。
 - 如果绝对路径执行报 `No such file or directory` 但文件确实存在：说明拿到的是
   动态链接的 musl 版本（缺 loader），用 `readelf -l <bin> | grep INTERP` 检查；
   正常构建结果不应有 `INTERP`。
@@ -505,10 +431,10 @@ command -v yazi
 - **宿主机是 Ubuntu 18.04 时**：Rust 工具是 musl 静态，宿主机也能跑；但 Neovim /
   Node 是 20.04 glibc 基线制品，`.bashrc` 里只在检测到容器时才把它们加入 PATH，
   避免污染宿主机 shell。
-- **GitHub 连通性**：nvim 源码、LazyVim starter、nvim 依赖、LazyVim 插件都走
-  GitHub。脚本内置 `ghfast.top` / `gh-proxy.com` 前缀；若两者都不通，先设置
-  `HTTPS_PROXY` 或手工把源码放到对应目录后重跑。yazi 额外支持从 Gitee 镜像
-  源码编译回退。
-- **Lazy sync 失败不算安装失败**：starter 配置已落地，网络恢复后重跑脚本即可续传。
+- **GitHub 连通性**：nvim 源码和编译依赖走 GitHub。脚本内置 `ghfast.top` /
+  `gh-proxy.com` 前缀；若两者都不通，先设置 `HTTPS_PROXY` 或手工把源码放到对应
+  目录后重跑。yazi 额外支持从 Gitee 镜像源码编译回退。
+- **LazyVim 插件/parser 失败不属于 devkit 安装失败**：这些由你的 Neovim 配置负责，
+  网络恢复后重试即可。
 - **Trellis 只安装 CLI**：`trellis init` 在每个项目仓库里单独执行，不会自动改你的
   项目。

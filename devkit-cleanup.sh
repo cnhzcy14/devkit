@@ -5,8 +5,8 @@
 # 删除范围：
 #   ~/.devkit（Rust 静态工具、nvim、node、npm 全局包、uv/Python、构建缓存）
 #   ~/.bashrc 中带 “devkit” 标记的托管块
-#   仅当 setup 创建过时才删除 ~/.config/nvim 与 nvim 的 data/state/cache
-#   若 setup 备份过旧的 ~/.config/nvim，则自动还原
+#   仅当 setup 创建过时才删除 nvim 的 data/state/cache
+#   说明：新版 setup 不再托管 ~/.config/nvim，因此清理脚本也不删除/还原它
 #
 # 用法：
 #   bash devkit-cleanup.sh              # 默认清理 ~/.devkit（宿主机或容器内均可）
@@ -31,8 +31,6 @@ warn(){ printf '\033[1;33m[!]\033[0m %s\n' "$*"; }
 run(){ if [ "$DRY_RUN" = "1" ]; then printf '[dry-run] %s\n' "$*"; else "$@"; fi; }
 
 # 读取 setup 记录；没有记录时按“只清理根目录 + bashrc 块”处理
-NVIM_CONFIG_CREATED=0
-NVIM_CONFIG_BACKUP=""
 NVIM_DATA_CREATED=0
 NVIM_STATE_CREATED=0
 NVIM_CACHE_CREATED=0
@@ -61,25 +59,9 @@ else
   warn "$RC 不存在，跳过"
 fi
 
-# 先处理 nvim 配置和运行数据（它们在 ~/.devkit 之外）
-managed=0
-[ -f "$HOME/.config/nvim/.devkit-managed" ] && managed=1
-if [ "$NVIM_CONFIG_BACKUP" != "" ] && [ -e "$NVIM_CONFIG_BACKUP" ]; then
-  if [ "$managed" = "1" ] || [ ! -e "$HOME/.config/nvim" ]; then
-    log "还原旧 nvim 配置：$NVIM_CONFIG_BACKUP → $HOME/.config/nvim"
-    run rm -rf "$HOME/.config/nvim"
-    run mv "$NVIM_CONFIG_BACKUP" "$HOME/.config/nvim"
-  else
-    warn "~/.config/nvim 已是新的用户配置，不覆盖；把备份移到 ~/.config/nvim.devkit-backup"
-    run mv "$NVIM_CONFIG_BACKUP" "$HOME/.config/nvim.devkit-backup"
-  fi
-elif [ "$NVIM_CONFIG_CREATED" = "1" ] && [ "$managed" = "1" ]; then
-  log "删除 setup 创建的 ~/.config/nvim"
-  run rm -rf "$HOME/.config/nvim"
-elif [ "$NVIM_CONFIG_CREATED" = "1" ]; then
-  warn "~/.config/nvim 缺少托管标记，保留（如需删除请手动确认）"
-else
-  log "~/.config/nvim 不是 setup 创建，保留"
+# 旧版 devkit 曾托管 ~/.config/nvim；新版不再创建、备份或还原它。
+if [ -f "$HOME/.config/nvim/.devkit-managed" ]; then
+  warn "发现旧版 devkit 托管的 ~/.config/nvim；新版不再管理，请确认后手动处理"
 fi
 
 for pair in "NVIM_DATA_CREATED:$HOME/.local/share/nvim" \
